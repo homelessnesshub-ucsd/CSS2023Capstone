@@ -1,0 +1,369 @@
+---
+title: "Untitled"
+author: "Kaye Prosser"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Install required packages if not already installed
+#install.packages("ggplot2")
+#install.packages("ggridges")
+#install.packages("stargazer")
+#install.packages("hrbrthemes")
+install.packages("gghalves")
+library(hrbrthemes)
+library(ggplot2)
+library(ggridges)
+library(dplyr)
+library(stargazer)
+library(tidyr)
+library(gghalves)
+library(ggdist)
+```
+
+```{r, include=FALSE}
+eviction <- read.csv("/Users/kayeprosser/Desktop/Evictionstotal_byPeriod_withIncome.csv")
+eviction_RofChange <- read.csv("/Users/kayeprosser/Desktop/HUB/Evictions_RateofChange_byPeriod.csv")
+```
+
+```{r}
+summary(eviction)
+```
+```{r}
+library(dplyr)
+
+# Calculate count, mean, standard deviation, min, and max for each column
+summary_table <- eviction %>%
+  summarize(count = n(),
+            totalcount_mean = mean(totalcount),
+            totalcount_sd = sd(totalcount),
+            totalcount_min = min(totalcount),
+            totalcount_max = max(totalcount),
+            Rate_per_totalHH_mean = mean(Rate_per_totalHH),
+            Rate_per_totalHH_sd = sd(Rate_per_totalHH),
+            Rate_per_totalHH_min = min(Rate_per_totalHH),
+            Rate_per_totalHH_max = max(Rate_per_totalHH),
+            P1RatePerHH_mean = mean(P1RatePerHH),
+            P1RatePerHH_sd = sd(P1RatePerHH),
+            P1RatePerHH_min = min(P1RatePerHH),
+            P1RatePerHH_max = max(P1RatePerHH),
+            P2RatePerHH_mean = mean(P2RatePerHH),
+            P2RatePerHH_sd = sd(P2RatePerHH),
+            P2RatePerHH_min = min(P2RatePerHH),
+            P2RatePerHH_max = max(P2RatePerHH),
+            P3RatePerHH_mean = mean(P3RatePerHH),
+            P3RatePerHH_sd = sd(P3RatePerHH),
+            P3RatePerHH_min = min(P3RatePerHH),
+            P3RatePerHH_max = max(P3RatePerHH))
+
+# Print the summary table
+print(summary_table)
+
+
+```
+
+```{r}
+#Descriptive stats for rate of change between periods
+summary_table_change <- eviction_RofChange %>%
+  summarize(count = n(),
+            RateofChangeP1_P2_mean = mean(RateofChangeP1_P2),
+            RateofChangeP1_P2_sd = sd(RateofChangeP1_P2),
+            RateofChangeP1_P2_min = min(RateofChangeP1_P2),
+            RateofChangeP1_P2_max = max(RateofChangeP1_P2),
+            RateofChangeP2_P3_mean = mean(RateofChangeP2_P3),
+            RateofChangeP2_P3_sd = sd(RateofChangeP2_P3),
+            RateofChangeP2_P3_min = min(RateofChangeP2_P3),
+            RateofChangeP2_P3_max = max(RateofChangeP2_P3),
+            RateofChangeP1_P3_mean = mean(RateofChangeP1_P3),
+            RateofChangeP1_P3_sd = sd(RateofChangeP1_P3),
+            RateofChangeP1_P3_min = min(RateofChangeP1_P3),
+            RateofChangeP1_P3_max = max(RateofChangeP1_P3))
+
+print(summary_table)
+```
+
+
+```{r}
+eviction <- na.omit(eviction)
+
+```
+
+```{r}
+
+
+eviction$ZIP <- as.factor(eviction$ZIP)
+
+
+# Create a scatter plot for Period1
+ggplot(eviction, aes(x = AVGPeriod1_income, y = Period1, color=ZIP)) +
+  geom_point() +
+  labs(x = "Average Median income", y = "Eviction Rate Period 1", title = "Eviction Data")
+
+# Create a scatter plot for Period2
+ggplot(eviction, aes(x = AVGPeriod2_income, y = Period2, color=ZIP)) +
+  geom_point() +
+  labs(x = "Average Median income", y = "Eviction Rate Period 2", title = "Eviction Data")
+
+# Create a scatter plot for Period3
+ggplot(eviction, aes(x = AVGPeriod3_income, y = Period3, color=ZIP)) +
+  geom_point() +
+  labs(x = "Average Median income", y = "Eviction Rate Period 3", title = "Eviction Data")
+
+```
+
+```{r}
+
+# Convert ZIP column to a factor
+eviction_long$ZIP <- as.factor(eviction_long$ZIP)
+
+# Split the data into subsets based on zip code range
+zip_subsets <- split(eviction_long, ceiling(seq_along(eviction_long$ZIP)/43))
+
+# Create a list to store the plots
+plots <- list()
+
+# Create separate plots for each subset
+for (i in seq_along(zip_subsets)) {
+  subset <- zip_subsets[[i]]
+  
+  plots[[i]] <- ggplot(subset, aes(x = ZIP, y = EvictionRate, fill = Period)) +
+    geom_bar(position = "dodge", stat = "identity") +
+    labs(x = "ZIP Code", y = "Eviction Rate", title = paste("Eviction Data Comparison by ZIP and Period (Subset", i, ")")) +
+    scale_fill_discrete(name = "Period")
+}
+
+# Print the plots
+for (i in seq_along(plots)) {
+  print(plots[[i]])
+}
+
+
+```
+
+
+
+```{r pressure, echo=FALSE}
+# Fit the regression model
+model1 <- lm(P1RatePerMo ~ AVGPeriod1_income, data = eviction)
+
+# Print the summary of the regression model
+summary(model1)
+
+#ggplot2
+#label is zip
+```
+
+```{r}
+table1 <- stargazer(model1, title = "Table 1: Period 1 Regression Model Summary", align = TRUE, 
+                   type = "text", header = FALSE)
+cat(table1)
+
+```
+
+
+```{r}
+# Fit the regression model
+model2 <- lm(P2RatePerMo ~ AVGPeriod2_income, data = eviction)
+
+# Print the summary of the regression model
+summary(model2)
+
+```
+
+```{r}
+table2 <- stargazer(model2, title = "Table 2: Period 2 Regression Model Summary", align = TRUE, 
+                   type = "text", header = FALSE)
+cat(table2)
+
+```
+
+```{r}
+# Fit the regression model
+model3 <- lm(P3RatePerMo ~ AVGPeriod3_income, data = eviction)
+
+# Print the summary of the regression model
+summary(model3)
+
+```
+```{r}
+table3 <- stargazer(model3, title = "Table 3: Period 3 Regression Model Summary", align = TRUE, 
+                   type = "text", header = FALSE)
+cat(table3)
+```
+
+```{r}
+
+library(ggplot2)
+
+# Create scatterplot with regression lines for each model
+ggplot(eviction, aes(x = AVGPeriod1_income, y = P1RatePerMo)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "blue") +
+  labs(x = "Average Median income (Period 1)", y = "Eviction Rate (Period 1)", title = "Model 1")
+
+ggplot(eviction, aes(x = AVGPeriod2_income, y = P2RatePerMo)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "red") +
+  labs(x = "Average Median income (Period 2)", y = "Eviction Rate (Period 2)", title = "Model 2")
+
+ggplot(eviction, aes(x = AVGPeriod3_income, y = P3RatePerMo)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, color = "green") +
+  labs(x = "Average Median income (Period 3)", y = "Eviction Rate (Period 3)", title = "Model 3")
+
+
+```
+
+```{r}
+# Create residual plots for each model
+par(mfrow = c(1, 3))
+plot(model1, which = c(1, 2), main = "Model 1", line = -1)
+plot(model2, which = c(1, 2), main = "Model 2", line = -1)
+plot(model3, which = c(1, 2), main = "Model 3", line = -1)
+
+
+```
+
+```{r}
+library(ggplot2)
+library(tidyr)
+
+# Convert ZIP column to a factor
+eviction$ZIP <- as.factor(eviction$ZIP)
+
+# Reshape data to longer format
+eviction_long <- pivot_longer(eviction, cols = starts_with("Period"), names_to = "Period", values_to = "EvictionRate")
+
+# Create a grouped bar plot
+ggplot(eviction_long, aes(x = ZIP, y = EvictionRate, fill = Period)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  labs(x = "ZIP Code", y = "Eviction Rate", title = "Eviction Data Comparison by ZIP and Period") +
+  scale_fill_discrete(name = "Period")
+
+```
+
+```{r}
+ggplot(eviction_long, aes(x = EvictionRate, y = Period, fill = Period)) +
+  geom_violin(scale = "width", trim = FALSE, width = 0.8, alpha = 0.8) +
+  geom_point(position = position_jitter(height = 0.1), alpha = 0.4, size = 1.5) +
+  labs(x = "Average Eviction Rate", y = "Moratorium Period", title = "Eviction Data by Covid Moratorium Period and Eviction Rates") +
+  scale_fill_discrete(name = "Period") +
+  theme_minimal()
+
+#Distribution of zip rate
+```
+
+```{r}
+library(ggplot2)
+
+# Specify the zip codes  to include
+zip_codes <- c("92010", "92083", "91950",  "92069")
+
+# Filter the data for the specified zip codes
+filtered_data <- eviction_long[eviction_long$ZIP %in% zip_codes, ]
+
+# Create a grouped bar plot for the filtered data
+ggplot(filtered_data, aes(x = ZIP, y = EvictionRate, fill = Period)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  labs(x = "ZIP Code", y = "Eviction Rate", title = "Eviction Data Comparison by ZIP and Period") +
+  scale_fill_discrete(name = "Period")
+
+```
+
+```{r}
+min(eviction_long$EvictionRate)
+
+```
+
+```{r}
+
+
+Eviction_longMO <- pivot_longer(eviction, cols = c(P1RatePerMo, P2RatePerMo, P3RatePerMo),
+               names_to = "RatePerMo",
+               values_to = "EvictionRatePerMo")
+
+
+```
+
+
+```{r}
+
+Eviction_longMO <- eviction %>%
+  pivot_longer(cols = c(P1RatePerMo, P2RatePerMo, P3RatePerMo),
+               names_to = "RatePerMo",
+               values_to = "EvictionRatePerMo")
+
+# Create a copy of data frame
+temp_df <- Eviction_longMO
+
+# Specify the column name
+column <- "EvictionRatePerMo"
+
+# Calculate the mean and standard deviation of the specified column
+mean_value <- mean(temp_df[["EvictionRatePerMo"]], na.rm = TRUE)
+sd_value <- sd(temp_df[["EvictionRatePerMo"]], na.rm = TRUE)
+
+# Define the upper threshold for dropping rows
+threshold_upper <- mean_value + (2 * sd_value)
+
+# Drop rows that are above the upper threshold or below 0
+temp_df <- temp_df[temp_df[["EvictionRatePerMo"]] >= 0 & temp_df[["EvictionRatePerMo"]] <= threshold_upper, ]
+
+
+```
+
+Violin plot with > +2std removed
+
+```{r}
+ggplot(temp_df, aes(x = EvictionRatePerMo, y = RatePerMo, fill = RatePerMo)) +
+  geom_violin(scale = "width", trim = FALSE, width = 0.8, alpha = 0.8) +
+  geom_point(position = position_jitter(height = 0.1), alpha = 0.4, size = 1.5) +
+  labs(x = "Average Eviction Rate Per Month", y = "Moratorium Period", title = "Covid19 Moratorium Periods and Eviction Rates per Month") +
+  scale_fill_discrete(name = "Period") +
+  theme_minimal()
+```
+
+```{r}
+Test_Ratechange <- eviction %>%
+  mutate(RateOfChange = (P2RatePerMo - P1RatePerMo) / P1RatePerMo)
+```
+
+```{r}
+
+# Calculate the rates of change
+Test_Ratechange2 <- eviction %>%
+  mutate(RateOfChange_P1_P2 = (P2RatePerMo - P1RatePerMo) / P1RatePerMo,
+         RateOfChange_P2_P3 = (P3RatePerMo - P2RatePerMo) / P2RatePerMo)
+
+# Calculate the mean and standard deviation of the specified column
+mean_value <- mean(Test_Ratechange2[["RateOfChange_P1_P2"]], na.rm = TRUE)
+sd_value <- sd(Test_Ratechange2[["RateOfChange_P1_P2"]], na.rm = TRUE)
+
+# Define the upper threshold for dropping rows
+threshold_upper <- mean_value + (2 * sd_value)
+
+# Drop rows that are above the upper threshold or below 0
+Test_Ratechange2 <- Test_Ratechange2[Test_Ratechange2[["RateOfChange_P1_P2"]] >= 0 & temp_df[["RateOfChange_P1_P2"]] <= threshold_upper, ]
+
+# Plot the rates of change
+ggplot(Test_Ratechange2) +
+  geom_smooth(aes(x = 1:nrow(Test_Ratechange2), y = RateOfChange_P1_P2, color = "Rate of Change (P1 to P2)"), method = "loess", se = FALSE) +
+  xlab("Observation") +
+  ylab("Rate of Change") +
+  scale_color_manual(values = c("blue", "red"), labels = c("Rate of Change (P1 to P2)", "Rate of Change (P2 to P3)")) +
+  theme_minimal()
+
+
+# The resulting plot will show two lines representing the rates of change between P1RatePerMo and P2RatePerMo, and between P2RatePerMo and P3RatePerMo.
+
+# Example output:
+# ![Rates of Change Plot](https://i.imgur.com/dU9V8iJ.png)
+
+
+```
+
+

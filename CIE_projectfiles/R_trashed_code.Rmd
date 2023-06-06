@@ -1,0 +1,1797 @@
+---
+title: "Categorical Logit for Client Needs"
+author: "Andrew Lona"
+output:
+  pdf_document:
+    keep_tex: true
+header-includes:
+   - \usepackage{dcolumn}
+---
+
+# Appendix
+
+Insert Appendix Text Here
+---
+
+## Data cleaning using the original dataset and Stata code as a reference.
+- format structure closely follows that from a prior project I have conducted
+- There is intentional redundancy in this process, this is more for keeping track of each variable (and some "sanity checking").
+- due to my inexperience with R optimization, removal of no-longer-needed variables occurs throughout this project to save on memory and processing performance. These lines begin with the "rm" function
+
+
+Libraries and Dataset Cleaning (Pt. 1)
+
+```{r, setup, include=FALSE}
+# system('python_data_cleaner.py') # runs python script before loading data
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo=FALSE) 
+```
+
+```{r, echo=F}
+# loading of any required libraries
+# Messages suppressed for all imports
+# required for additional data cleaning/wrangling
+suppressMessages({
+library(expss)
+library(dplyr)
+library(car)
+  
+# used for displaying tables
+library(stargazer)
+  
+# used for displaying NA heatmaps
+library(visdat)
+  
+# used for displaying correlation heatmap
+library(Hmisc)
+library(corrplot)
+  
+# used for multiple imputation + extension package
+library(mice)
+library(miceadds)
+  
+# used for random forest
+library(randomForest)
+  
+# used for forest plotting
+library(forestplot)
+  
+# used for clm
+library(ordinal)
+  
+# used for MAE
+library(Metrics)
+
+# used for CV and plotting
+library(ggplot2)
+library(ggpubr)
+library(plotROC)
+library(caret)
+library(caTools)
+library(pROC)
+library(gridExtra)
+
+# to save as much code as possible
+# aka text-wrapping for knitting
+library(formatR)
+library(tidyr)
+})
+
+# very useful stargazer mod once again
+mod_stargazer <- function(...){
+  output <- capture.output(stargazer(...))
+  # The first three lines are the ones we want to remove...
+  output <- output[4:length(output)]
+  # cat out the results - this is essentially just what stargazer does too
+  cat(paste(output, collapse = "\n"), "\n")
+}
+```
+
+
+
+- Data Wrangling/Cleaning
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+
+# loading CIE dataset
+CIE_demographics <- read.csv("client_demographics_20230310_python_cleaned.csv")
+
+# Unique ID Code
+contact_ID <- CIE_demographics$ContactID
+var_lab(contact_ID) <- "Contact ID" 
+
+# Client Record Type, Not Coding due to too many anonymous
+client_record_type <- CIE_demographics$Record_Type
+var_lab(client_record_type) <- "Client Record Type"
+
+# Date/Time Variable
+client_record_date <- as.POSIXct(CIE_demographics[['Account_Created_Date']], format = "%Y-%m-%d")
+var_lab(client_record_date) <- "Client Record Date"
+
+# Record Type
+# Not needed as they appear to share the same info + not needed for modeling
+# contact_ID <- CIE_demographics$ContactID
+# var_lab(contact_ID) <- "Contact ID"
+
+# if person consented to be in CIE network
+# for now, authorization and consent given = 1, otherwise 0
+# Possible Values: "Declined"      "No Consent"    "Consent"       "Authorization" "Revoked"       "Pending"       "Expired"   
+CIE_consent <- recode(CIE_demographics$Consent, "'Consent'=1; 'Authorization'=1; 'Declined'=0; 'No Consent'=0; 'Revoked'=0; 'Pending'=0; 'Expired'=0")
+var_lab(CIE_consent) <- "CIE Consent"
+
+# Client Zip Code
+zip_code <- CIE_demographics$Zip
+zip_code <- as.numeric(zip_code)
+var_lab(zip_code) <- "Zip Code"
+
+# Client Zip Code -> ZCTA
+# utilizing zip_to_ZCTA 2021 dataset
+# taken from: https://udsmapper.org/zip-code-to-zcta-crosswalk/
+ZCTA_ref <- read.csv("Zip_to_ZCTA.csv") # dataset loaded
+ZCTA <- ZCTA_ref$ZCTA[match(zip_code, ZCTA_ref$ZIP_CODE)]
+var_lab(ZCTA) <- "ZCTA from Zip Code"
+
+# Client Neighborhood
+client_neighborhood <- CIE_demographics$Neighborhood
+var_lab(client_neighborhood) <- "Client Neighborhood"
+
+# Client Neighborhood Dummied
+# simple factoring, we are not caring about the order, just the numerical representations
+client_neighborhood_dummied <- as.integer(factor(CIE_demographics$Neighborhood))
+var_lab(client_neighborhood_dummied) <- "Client Neighborhood Dummied"
+
+# HHSA_Region
+# "East"          "North Inland"  "South"         "North Central" "Central"       "North Coastal" NA     
+region <- CIE_demographics$HHSA_Region
+region <- recode(region, "'East'=0; 'North Inland'=1; 'South'=2; 'North Central'=3; 'Central'=4; 'North Coastal'=5")
+val_lab(region) <- make_labels("0 East
+                                       1 North Inland
+                                       2 South
+                                       3 North Central
+                                       4 Central
+                                       5 North Coastal")
+var_lab(region) <- "HHSA Region"
+
+# County 
+county <- CIE_demographics$County
+var_lab(county) <- "County"
+
+# Binary for Housing Needs
+# Flag indicating if client ever experienced a need | Null means no data or selected?
+housing_needs <- recode(CIE_demographics$Housing_Needs, "'Yes'=1; 'No'=0")
+var_lab(housing_needs) <- "Housing Needs"
+val_lab(housing_needs) <- make_labels("0 No
+                                       1 Yes")
+
+# Binary for Utility Needs
+utilities_needs <- recode(CIE_demographics$Utilities_Needs, "'Yes'=1; 'No'=0")
+var_lab(utilities_needs) <- "Utilities Needs"
+val_lab(utilities_needs) <- make_labels("0 No
+                                       1 Yes")
+
+# Binary for Medical Needs
+medical_needs <- recode(CIE_demographics$Medical_Needs, "'Yes'=1; 'No'=0")
+var_lab(medical_needs) <- "Medical Needs"
+val_lab(medical_needs) <- make_labels("0 No
+                                       1 Yes")
+
+# Binary for Eviction Needs
+eviction_needs <- recode(CIE_demographics$Eviction_Needs, "'Yes'=1; 'No'=0")
+var_lab(eviction_needs) <- "Eviction Needs"
+val_lab(eviction_needs) <- make_labels("0 No
+                                       1 Yes")
+
+# At Risk of Losing Housing Assessment
+# No means client answered no or was not answered question, Yes means they were flagged or answered, NA is no answer
+at_risk_losing_housing <- recode(CIE_demographics$At_Risk_of_Losing_Housing_Assessment, "'Yes'=1; 'No/Not Known'=0")
+at_risk_losing_housing[at_risk_losing_housing == 0] <- NA
+var_lab(at_risk_losing_housing) <- "At Risk of Losing Housing Assessment"
+	
+# Financial Barriers Assessment
+# No means client answered no or was not answered question, Yes means they were flagged or answered, NA is no answer
+financial_barriers <- recode(CIE_demographics$Financial_Barriers_Assessment, "'Yes'=1; 'No/Not Known'=0")
+# financial_barriers[financial_barriers == 0] <- NA # losing way too many rows
+# discussed with mentor, it is best to leave in.
+var_lab(financial_barriers) <- "Financial Barriers Assessment"
+
+# Eviction/3-day pay or quit notice Assessment
+# No means client answered no or was not answered question, Yes means they were flagged or answered, NA is no answer
+eviction_pay_quit <- recode(CIE_demographics$Eviction__3.day_pay_or_quit_notice_Assessment, "'Yes'=1; 'No/Not Known'=0")
+#eviction_pay_quit[eviction_pay_quit == 0] <- NA
+var_lab(eviction_pay_quit) <- "Eviction/3-Day Pay or Quit Assessment"
+
+# Gender
+gender <- recode(CIE_demographics$Gender, "'Male'=0; 'Female'=1; 'Other'=2")
+gender[gender == 2] <- NA
+val_lab(gender) <- make_labels("0 Male
+                                       1 Female")
+var_lab(gender) <- "Gender"
+
+# Gender Identity
+# Gender client identifies with
+gender_identity <- recode(CIE_demographics$Gender_Identity, "'Woman'=0; 'Man'=1; 'No Gender/ Gender non-conforming'=2; 'Transgender Woman'=3; 'Transgender Man'=4; 'Genderqueer'=5; 'Other'=6; 'Intersex'=7; 'Gender non-binary'=8")
+val_lab(gender_identity) <- make_labels("0 Woman
+                                       1 Man
+                                       2 No Gender/ Gender non-conforming
+                                       3 Transgender Woman
+                                       4 Transgender Man
+                                       5 Genderqueer
+                                       6 Other
+                                       7 Intersex
+                                       8 Gender non-binary")
+var_lab(gender_identity) <- "Gender Identity"
+
+
+ #[1] "Woman"                            "Man"                             
+ #[3] NA                                 "No Gender/ Gender non-conforming"
+ #[5] "Transgender Woman"                "Other"                           
+ #[7] "Transgender Man"                  "Intersex"                        
+ #[9] "Genderqueer"                      "Gender non-binary"    
+
+# Age Group
+#'60-69', '40-49', '30-39', '50-59', '20-29', '19 and Under', '70-79', 'NA', '90+', '80-89'
+age_group <- recode(CIE_demographics$Age_Group, "'19 and Under'=0; '20-29'=1; '30-39'=2; '40-49'=3; '50-59'=4; '60-69'=5; '70-79'=6; '80-89'=7; '90+'=8")
+val_lab(age_group) <- make_labels("0 0-19
+                                       1 20-29
+                                       2 30-39
+                                       3 40-49
+                                       4 50-59
+                                       5 60-69
+                                       6 70-79
+                                       7 80-89
+                                       8 90+")
+var_lab(age_group) <- "Age Group"
+
+# Number of Children
+# 1, No Children, 2, 3, 4, 5, 6 or more
+num_of_children <- recode(CIE_demographics$Number_of_Children, "'No Children'=0; '1' = 1; '2'=2; '3'=3; '4'=4; '5'=5; '6 or more'=6")
+var_lab(num_of_children) <- "Age Group"
+
+# Hispanic/Latino
+hisp_latino <- recode(CIE_demographics$Ethnic_Category, "'Non-Hispanic/Non-Latino'=0; 'Hispanic / Latino'=1")
+val_lab(hisp_latino) <- make_labels("0 Non-Hispanic/Non-Latino
+                                       1 Hispanic / Latino")
+var_lab(hisp_latino) <- "Hispanic/Latino"
+
+# Race Multi-Ethnic (Skipping Base Race Category For Now)
+#'NA', 'White/ Caucasian', 'Hispanic/Latino', 'Other',
+#       'African American/ Black', 'Bi-Racial/ Multi-Racial',
+#       'Asian/ Pacific Islander/ Hawaiian',
+#       'Alaska Native/ Native Indian']
+race_multi_ethnic <- recode(CIE_demographics$Race.Ethnicity_Group, "'Alaska Native/ Native Indian'=0; 'Asian/ Pacific Islander/ Hawaiian'=1; 'Bi-Racial/ Multi-Racial'=2; 'African American/ Black'=3; 'Other'=4; 'Hispanic/Latino'=5; 'White/ Caucasian'=6")
+val_lab(race_multi_ethnic) <- make_labels("0 Alaska Native/ Native Indian
+                                       1 Asian/ Pacific Islander/ Hawaiian
+                                       2 Bi-Racial/ Multi-Racial
+                                       3 African American/ Black
+                                       4 Other
+                                       5 Hispanic / Latino
+                                       6 White/ Caucasian")
+var_lab(race_multi_ethnic) <- "Race-Ethnicity Group"
+
+# Language
+#'NA', 'English', 'Spanish', 'Other', 'Arabic', 'Tagalog',
+#       'Vietnamese', 'Farsi', 'Korean', 'Mandarin', 'Russian',
+#       'Cantonese', 'Chinese', 'Portuguese', 'Somali', 'Cambodian',
+#       'Ukrainian', 'Italian', 'Punjabi'
+language <- recode(CIE_demographics$Language, "'English'=0; 'Spanish'=1; 'Other'=2; 'Arabic'=3; 'Tagalog'=4; 'Vietnamese'=5; 'Farsi'=6; 'Korean'=7; 'Mandarin'=8; 'Russian'=9; 'Cantonese'=10; 'Chinese'=11; 'Portuguese'=12; 'Somali'=13; 'Cambodian'=14; 'Ukrainian'=15; 'Italian'=16; 'Punjabi'=17")
+val_lab(language) <- make_labels("0 English
+                                       1 Spanish
+                                       2 Other
+                                       3 Arabic
+                                       4 Tagalog
+                                       5 Vietnamese
+                                       6 Farsi
+                                       7 Korean
+                                       8 Mandarin
+                                       9 Russian
+                                       10 Cantonese
+                                       11 Chinese
+                                       12 Portuguese
+                                       13 Somali
+                                       14 Cambodian
+                                       15 Ukrainian
+                                       16 Italian
+                                       17 Punjabi")
+var_lab(language) <- "Language"
+
+
+# Disability/Health Condition
+# Whether client is experiencing a disabilty/health condition or not
+disability_health_condition <- recode(CIE_demographics$Disability_or_Health_Condition, "'Yes'=1; 'No'=0")
+val_lab(disability_health_condition) <- make_labels("0 No
+                                       1 Yes")
+var_lab(disability_health_condition) <- "Disability or Health Condition"
+
+# Pregnancy Status
+pregnancy <- recode(CIE_demographics$Pregnancy_Status, "'Pregnant'=1; 'Not Pregnant'=0")
+val_lab(pregnancy) <- make_labels("0 Not Pregnant
+                                       1 Pregnant")
+var_lab(pregnancy) <- "Pregnancy Status"
+
+# Household Monthly Income
+# Question of Income
+# Would it make sense to even use this considering the large majority of missing data?
+# Why would we include the federal poverty level? (will omit for now)
+hhincome <- CIE_demographics$Monthly_Income
+var_lab(hhincome) <- "Household Monthly Income"
+
+# Household Size
+# unchanged
+hhsize <- CIE_demographics$Household_Size
+var_lab(hhsize) <- "Household Size"
+
+# Residency Status
+residency <- recode(CIE_demographics$Residency_Status, "'U.S Citizen/Naturalized Citizen'=0; 'Lawful Permanent Resident (LPR)'=1; 'Non-Citizen or Unauthorized/Undocumented Immigrant'=2; 'Conditional Permanent Resident'=3; 'Refugee'=4; 'Special Immigrant Juvenile (SIJ) Status'=5; 'Asylum Seeker'=6; 'Non-Immigrant Temporary Visas'=7; 'Family-Sponsored Visas'=8; 'VAWA Self-Petitioner'=9; 'Victim of Trafficking in persons'=10")
+val_lab(residency) <- make_labels("0 U.S Citizen/Naturalized Citizen
+                                       1 Lawful Permanent Resident (LPR)
+                                       2 Non-Citizen or Unauthorized/Undocumented Immigrant
+                                       3 Conditional Permanent Resident
+                                       4 Refugee
+                                       5 Special Immigrant Juvenile (SIJ) Status
+                                       6 Asylum Seeker
+                                       7 Non-Immigrant Temporary Visas
+                                       8 Family-Sponsored Visas
+                                       9 VAWA Self-Petitioner
+                                       10 Victim of Trafficking in persons")
+var_lab(residency) <- "Residency Status"
+
+# skipping Non-Cash Benefits for more thorough processing/coding
+
+# Military Status
+military_status <- recode(CIE_demographics$Military__Veteran, "'Not Military/Veteran'=0; 'Military/Veteran'=1")
+val_lab(military_status) <- make_labels("0 Not Military/Veteran
+                                       1 Military/Veteran")
+var_lab(military_status) <- "Military/Veteran Status"
+
+# Employment
+employment <- recode(CIE_demographics$Employment, "'Disabled'=0; 'Unable to work'=1; 'Full-Time'=2; 'Self-employed'=3; 'Part-Time'=4; 'Unemployed'=5; 'Seasonal / Sporadic'=6; 'Other'=7; 'Retired'=8; 'Underemployed'=9; 'Not in the Labor Force'=10; 'In School'=11; 'Temporary'=12")
+val_lab(employment) <- make_labels("0 Disabled
+                                       1 Unable to work
+                                       2 Full-Time
+                                       3 Self-employed
+                                       4 Part-Time
+                                       5 Unemployed
+                                       6 Seasonal / Sporadic
+                                       7 Other
+                                       8 Retired
+                                       9 Underemployed
+                                       10 Not in the Labor Force
+                                       11 In School
+                                       12 Temporary")
+var_lab(employment) <- "Employment Status"
+ 
+# Education
+# need to remove the ' from Master's Degree
+education <- gsub("Master's Degree", "Masters Degree", CIE_demographics$Education)
+education <- gsub("Bachelor's Degree", "Bachelors Degree", education)
+education <- recode(education, "'No formal education'=0; 'Less than high school'=1; 'High School Degree'=2; 'GED or alternative credential'=3; 'Some College No Degree'=4; 'Associate Degree'=5; 'Bachelors Degree'=6; 'Masters Degree'=7; 'Professional Degree'=8; 'Doctoral Degree'=9")
+val_lab(education) <- make_labels("0 No formal education
+                                       1 Less than high school
+                                       2 High School Degree
+                                       3 GED or alternative credential
+                                       4 Some College No Degree
+                                       5 Associate Degree
+                                       6 Bachelors Degree
+                                       7 Masters Degree
+                                       8 Professional Degree
+                                       9 Doctoral Degree")
+var_lab(education) <- "Level of Education"
+
+# Health Insurance
+# NAs introduced by coercion, yet no new NAs were found?
+health_insurance <- recode(CIE_demographics$Health_Insurance, "'Yes'=1; 'No'=0")
+val_lab(health_insurance) <- make_labels("0 No
+                                       1 Yes")
+var_lab(health_insurance) <- "Health Insurance"
+
+# Health Insurance Type
+health_insurance_type <- recode(CIE_demographics$Health_Insurance_Type, "'Medi-Cal'=0; 'Employer Provided'=1; 'Covered CA'=2; 'Other'=3; 'VA Health'=4; 'Private'=5; 'No Insurance'=6; 'Medicare'=7; 'Medi-Medi'=8; 'Military (TRICARE)'=9; 'Parts of Medicare (A)'=10; 'COBRA'=11; 'CMS'=12; 'Parts of Medicare (B)'=13; 'Parts of Medicare (D)'=14")
+val_lab(health_insurance_type) <- make_labels("0 Medi-Cal
+                                       1 Employer Provided
+                                       2 Covered CA
+                                       3 Other
+                                       4 VA Health
+                                       5 Private
+                                       6 No Insurance
+                                       7 Medicare
+                                       8 Medi-Medi
+                                       9 Military (TRICARE)
+                                       10 Parts of Medicare (A)
+                                       11 COBRA
+                                       12 CMS
+                                       13 Parts of Medicare (B)
+                                       14 Parts of Medicare (D)")
+var_lab(health_insurance_type) <- "Health Insurance Type"
+
+# Health Plan
+#
+#
+#
+# Need to Finish
+
+# Homeless
+homeless <- recode(CIE_demographics$Homeless, "'Yes'=1; 'No'=0")
+val_lab(homeless) <- make_labels("0 No
+                                       1 Yes")
+var_lab(homeless) <- "Homeless"
+
+# Housing Type
+housing_type <- recode(CIE_demographics$Housing_Type, "'Stable Housing'=0; 'Unsheltered'=1; 'Sheltered'=2; 'Unstable Housing'=3; 'Unknown Housing'=4; 'Institutional Housing'=5; 'Homeless Unspecified'=6")
+val_lab(housing_type) <- make_labels("0 Stable Housing
+                                       1 Unsheltered
+                                       2 Sheltered
+                                       3 Unstable Housing
+                                       4 Unknown Housing
+                                       5 Institutional Housing
+                                       6 Homeless Unspecified")
+var_lab(housing_type) <- "Housing Type"
+
+# putting it all back together into one new Dataframe/Table
+cleaned_CIE_for_modeling <- data.frame(contact_ID, client_record_type, client_record_date, CIE_consent, zip_code, ZCTA, client_neighborhood, client_neighborhood_dummied, region, county, housing_needs, utilities_needs, medical_needs, eviction_needs, at_risk_losing_housing, financial_barriers, eviction_pay_quit, gender, gender_identity, age_group, num_of_children, hisp_latino, race_multi_ethnic, language, disability_health_condition, pregnancy, hhincome, hhsize, residency, military_status, employment, education, health_insurance, health_insurance_type, homeless, housing_type)
+
+# removing unused variables
+rm(contact_ID, client_record_type, client_record_date, CIE_consent, zip_code, ZCTA, client_neighborhood, client_neighborhood_dummied, region, county, housing_needs, utilities_needs, medical_needs, eviction_needs, at_risk_losing_housing, financial_barriers, eviction_pay_quit, gender, gender_identity, age_group, num_of_children, hisp_latino, race_multi_ethnic, language, disability_health_condition, pregnancy, hhincome, hhsize, residency, military_status, employment, education, health_insurance, health_insurance_type, homeless, housing_type, ZCTA_ref, CIE_demographics)
+
+# Tracking Years
+# used for merging ACS
+cleaned_CIE_for_modeling$Year <- 0
+cleaned_CIE_for_modeling$Year[cleaned_CIE_for_modeling$client_record_date >= as.Date("2018-01-01") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2018-12-31")] <- 2018
+cleaned_CIE_for_modeling$Year[cleaned_CIE_for_modeling$client_record_date >= as.Date("2019-01-01") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2019-12-31")] <- 2019
+cleaned_CIE_for_modeling$Year[cleaned_CIE_for_modeling$client_record_date >= as.Date("2020-01-01") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2020-12-31")] <- 2020
+cleaned_CIE_for_modeling$Year[cleaned_CIE_for_modeling$client_record_date >= as.Date("2021-01-01") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2021-12-31")] <- 2021
+cleaned_CIE_for_modeling$Year[cleaned_CIE_for_modeling$client_record_date >= as.Date("2022-01-01") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2022-12-31")] <- 2022
+
+# ZCTA Poverty and Population
+# Accounting for Population Size and Local Poverty Levels
+# loading datasets to pull poverty estimates
+ACS_2018 <- read.csv("ACS_Poverty_Estimate/2018.csv")
+ACS_2019 <- read.csv("ACS_Poverty_Estimate/2019.csv")
+ACS_2020 <- read.csv("ACS_Poverty_Estimate/2020.csv")
+ACS_2021 <- read.csv("ACS_Poverty_Estimate/2021.csv")
+population_2010 <- read.csv("DECENNIALSF12010.csv") # population count
+# simply retaining the identifying year, ZCTA, and total est count of population in poverty
+# according to ACS (taken from US Census Data Website)
+# S1701_C01_038E contains amount of people who are at  or below the 50% poverty line level
+ACS_2018 <- ACS_2018[, c("NAME", "S1701_C01_038E", "ACS_Year")]
+ACS_2019 <- ACS_2019[, c("NAME", "S1701_C01_038E", "ACS_Year")]
+ACS_2020 <- ACS_2020[, c("NAME", "S1701_C01_038E", "ACS_Year")]
+ACS_2021 <- ACS_2021[, c("NAME", "S1701_C01_038E", "ACS_Year")]
+# stripping ZCTA from all ZCTA columns
+ACS_2018$NAME <- sub("^ZCTA5 ", "", ACS_2018$NAME)
+ACS_2019$NAME <- sub("^ZCTA5 ", "", ACS_2019$NAME)
+ACS_2020$NAME <- sub("^ZCTA5 ", "", ACS_2020$NAME)
+ACS_2021$NAME <- sub("^ZCTA5 ", "", ACS_2021$NAME)
+population_2010$Label..Grouping. <- sub("^ZCTA5 ", "", population_2010$Label..Grouping.)
+# combining ACS into a single dataframe
+ACS_2018_2021 <- rbind(ACS_2018, ACS_2019, ACS_2020, ACS_2021)
+names(ACS_2018_2021) <- c("ZCTA", "num_below_poverty", "Year") # renaming cols
+names(population_2010) <- c("ZCTA", "pop_total") # renaming cols
+rm(ACS_2018, ACS_2019, ACS_2020, ACS_2021) #removing unneeded dataframe/s
+# now need to subset rows for 2021 and duplicate as 2022 in order to not lose 2022 data
+duplicated_rows <- ACS_2018_2021[ACS_2018_2021$Year == 2021, ]
+duplicated_rows$Year <- 2022 # changing year
+ACS_2018_2021 <- rbind(ACS_2018_2021, duplicated_rows) # binding back
+rownames(ACS_2018_2021) <- NULL # restting row names/index
+# now adding column of poverty and population based on ZCTA
+cleaned_CIE_for_modeling <- merge(cleaned_CIE_for_modeling, ACS_2018_2021, by = c("ZCTA", "Year"))
+# and now merging for population
+cleaned_CIE_for_modeling <- merge(cleaned_CIE_for_modeling, population_2010, by = c("ZCTA"))
+# removing unneeded variables
+cleaned_CIE_for_modeling$Year <- NULL
+# divide poverty amt by num of pop per ZCTA
+cleaned_CIE_for_modeling$pop_total <- sub(",", "", cleaned_CIE_for_modeling$pop_total) # fixing character to integer issues
+cleaned_CIE_for_modeling$pop_total <- as.numeric(cleaned_CIE_for_modeling$pop_total) # converting to type numeric
+cleaned_CIE_for_modeling$poverty_percentage <- cleaned_CIE_for_modeling$num_below_poverty / cleaned_CIE_for_modeling$pop_total
+#cleaning up
+cleaned_CIE_for_modeling$pop_total <- NULL
+cleaned_CIE_for_modeling$num_below_poverty <- NULL
+rm(population_2010, ACS_2018_2021, duplicated_rows)
+
+# storing base data just in case
+coded_only_CIE <- cleaned_CIE_for_modeling
+```
+
+# Base Distribution of the Data
+  - Without account for missing values, what does our data dist look like?
+    - this rough code is messy and does not account for ID vars, dates, etc.
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# making temporary df and dropping non numerics
+opposite_columns <- cleaned_CIE_for_modeling[, setdiff(names(cleaned_CIE_for_modeling), c("ZCTA", "contact_ID", "client_record_type", "client_record_date", "CIE_consent", "zip_code", "client_neighborhood", "client_neighborhood_dummied", "county"))]
+dist_CIE <- data.frame(opposite_columns)
+
+par(mfrow=c(4,7), mar = c(4, 4, 2, 1)) # creating canvas size and layout
+var_to_plot <- colnames(dist_CIE) # saving variable names
+for(i in var_to_plot){hist(dist_CIE[,i],xlab=i,main="")} # plotting all distributions
+
+rm(var_to_plot, dist_CIE, opposite_columns, i)
+par() # resetting par back to default and cleaning up
+```
+
+# Missing Data
+- due the incredibly large amount of missing values per each feature, it is best to directly address the missingness on a feature-basis rather than row-wise deletion. If row-wise deletion were conducted, we would ultimately lose >~80% of observations.
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# further cleaning/viewing
+
+# Sampling and plotting missing heatmap
+missing_matrix_sampled <- cleaned_CIE_for_modeling %>% sample_frac(0.1) # subsetting 10% due to memory limitations of pheatmap
+# Plotting a missingness heatmap
+plot_miss <- vis_miss(missing_matrix_sampled)
+plot_miss + theme(plot.margin = margin(1, 3, 1, 1, "cm"))
+rm(missing_matrix_sampled, plot_miss)
+
+# viewing missing data amounts as proportion per feature
+original_rows <- nrow(cleaned_CIE_for_modeling) # saving row/obv count here
+missing_proportions <- cleaned_CIE_for_modeling %>%
+  summarise_all(~ mean(is.na(.))) %>%
+  gather(key = "Variable", value = "MissingProportion")
+# Plot the missing value distributions (just another way to view it)
+ggplot(missing_proportions, aes(x = reorder(Variable, -MissingProportion), y = MissingProportion)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  xlab("Variable") +
+  ylab("Proportion of Missing Values") +
+  coord_flip()
+rm(missing_proportions) # removing unneeded variable, keeping original rows var
+```
+
+Based on the extremely low amount of observations for "at risk losing housing", "residency", and "hisp latino", it is best to remove such features from the analysis entirely.
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# eviction pay quit (no longer due to financial barriers 0 -> nan change)
+drop_columns <- c("at_risk_losing_housing", "residency", "hisp_latino", "race_multi_ethnic")
+cleaned_CIE_for_modeling <- cleaned_CIE_for_modeling[, !(colnames(cleaned_CIE_for_modeling) %in% drop_columns)]
+cleaned_rows <- nrow(cleaned_CIE_for_modeling) # saving row count post cleaning for columns
+rm(drop_columns) # removing drop_columns list
+
+# calculating percentage of rows removed + report
+rows_removed_percent <- ((original_rows - cleaned_rows) / original_rows) * 100
+rows_removed_report <- paste0("Original row count: ", original_rows, "\n",
+                 "Cleaned row count: ", cleaned_rows, "\n",
+                 "Rows removed: ", original_rows - cleaned_rows, "\n",
+                 "Percentage of rows removed: ", rows_removed_percent, "%")
+rm(cleaned_rows, rows_removed_percent) # removing cleaned rows var and rows_removed_percent var
+
+# Sampling and plotting missing heatmap once again
+missing_matrix_sampled <- cleaned_CIE_for_modeling %>% sample_frac(0.1) # subsetting 10% due to memory limitations of pheatmap
+# Plotting a missingness heatmap
+plot_miss <- vis_miss(missing_matrix_sampled)
+plot_miss + theme(plot.margin = margin(1, 3, 1, 1, "cm"))
+rm(missing_matrix_sampled, plot_miss)
+
+# display missing values along with observation report
+missing_proportions <- cleaned_CIE_for_modeling %>%
+  summarise_all(~ mean(is.na(.))) %>%
+  gather(key = "Variable", value = "MissingProportion")
+# Plot the missing value distributions
+ggplot(missing_proportions, aes(x = reorder(Variable, -MissingProportion), y = MissingProportion)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  xlab("Variable") +
+  ylab("Proportion of Missing Values") +
+  coord_flip()
+cat(rows_removed_report) # observation report here
+rm(rows_removed_report) # removing var
+rm(missing_proportions) # removing missing proportions plot
+
+
+# we shouldn't see any row change given only features are removed...
+```
+
+It would also make sense to potentially remove housing_type, homeless, and education based on the large amount of missing data trends
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# removing columns again
+drop_columns <- c("housing_type", "homeless", "education")
+cleaned_CIE_for_modeling <- cleaned_CIE_for_modeling[, !(colnames(cleaned_CIE_for_modeling) %in% drop_columns)]
+cleaned_rows <- nrow(cleaned_CIE_for_modeling) # saving row count post cleaning for columns
+rm(drop_columns) # removing drop_columns list
+
+# calculating percentage of rows removed + report
+rows_removed_percent <- ((original_rows - cleaned_rows) / original_rows) * 100
+rows_removed_report <- paste0("Original row count: ", original_rows, "\n",
+                 "Cleaned row count: ", cleaned_rows, "\n",
+                 "Rows removed: ", original_rows - cleaned_rows, "\n",
+                 "Percentage of rows removed: ", rows_removed_percent, "%")
+rm(cleaned_rows, rows_removed_percent) # removing cleaned rows var and rows_removed_percent var
+
+# Sampling and plotting missing heatmap once again
+missing_matrix_sampled <- cleaned_CIE_for_modeling %>% sample_frac(0.1) # subsetting 10% due to memory limitations of pheatmap
+# Plotting a missingness heatmap
+plot_miss <- vis_miss(missing_matrix_sampled)
+plot_miss + theme(plot.margin = margin(1, 3, 1, 1, "cm"))
+rm(missing_matrix_sampled, plot_miss)
+
+# display missing values along with observation report
+missing_proportions <- cleaned_CIE_for_modeling %>%
+  summarise_all(~ mean(is.na(.))) %>%
+  gather(key = "Variable", value = "MissingProportion")
+# Plot the missing value distributions
+ggplot(missing_proportions, aes(x = reorder(Variable, -MissingProportion), y = MissingProportion)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  xlab("Variable") +
+  ylab("Proportion of Missing Values") +
+  coord_flip()
+cat(rows_removed_report) # observation report here
+rm(rows_removed_report) # removing var
+rm(missing_proportions) # removing missing proportions plot
+
+
+# we shouldn't see any row change given only features are removed...
+```
+
+Now let's see what happens when we remove NAs row-wise...
+
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# due to the changes being experimental, we will create a test copy
+# now dropping all rows containing NA for modeling
+cleaned_CIE_for_modeling_rowwise <- cleaned_CIE_for_modeling[complete.cases(cleaned_CIE_for_modeling), ]
+cleaned_rows <- nrow(cleaned_CIE_for_modeling_rowwise) # once again saving row count post cleaning for columns
+
+# calculating percentage of rows removed + report
+rows_removed_percent <- ((original_rows - cleaned_rows) / original_rows) * 100
+rows_removed_report <- paste0("Original row count: ", original_rows, "\n",
+                 "Cleaned row count: ", cleaned_rows, "\n",
+                 "Rows removed: ", original_rows - cleaned_rows, "\n",
+                 "Percentage of rows removed: ", rows_removed_percent, "%")
+rm(cleaned_rows, rows_removed_percent) # removing cleaned rows var and rows_removed_percent var
+
+# Sampling and plotting missing heatmap once again
+missing_matrix_sampled <- cleaned_CIE_for_modeling_rowwise %>% sample_frac(0.1) # subsetting 10% due to memory limitations of pheatmap
+# Plotting a missingness heatmap
+plot_miss <- vis_miss(missing_matrix_sampled)
+plot_miss + theme(plot.margin = margin(1, 3, 1, 1, "cm"))
+rm(missing_matrix_sampled, plot_miss)
+
+# display missing values along with observation report
+missing_proportions <- cleaned_CIE_for_modeling_rowwise %>%
+  summarise_all(~ mean(is.na(.))) %>%
+  gather(key = "Variable", value = "MissingProportion")
+# Plot the missing value distributions
+ggplot(missing_proportions, aes(x = reorder(Variable, -MissingProportion), y = MissingProportion)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  xlab("Variable") +
+  ylab("Proportion of Missing Values") +
+  coord_flip()
+cat(rows_removed_report) # observation report here
+rm(rows_removed_report, missing_proportions) # removing vars + copied df
+
+# it is recommended to return to this in order to assess whether other columns can be dropped
+# versus dropping rows
+```
+
+With row-wise deletion, we end up losing 66% of the data
+  - this is absolutely too much we are giving up and are significantly limiting any potential modeling
+  - alternative solution, Multivariate Imputation by Chained Equations (MICE), with row-wise NAs removed on ZCTA (for spatial-based analyses)
+    -NAs also for our outcome should be done at this point as well.
+  - Before we bite off more than we can chew, let's check the distribution of the data once again and compare...
+  
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# making temporary df and dropping non numerics
+opposite_columns <- cleaned_CIE_for_modeling_rowwise[, setdiff(names(cleaned_CIE_for_modeling_rowwise), c("ZCTA", "contact_ID", "client_record_type", "client_record_date", "CIE_consent", "zip_code", "client_neighborhood", "client_neighborhood_dummied", "county"))]
+dist_CIE <- data.frame(opposite_columns)
+
+par(mfrow=c(3,7), mar = c(4, 4, 2, 1)) # creating canvas size and layout
+var_to_plot <- colnames(dist_CIE) # saving variable names
+for(i in var_to_plot){hist(dist_CIE[,i],xlab=i,main="")} # plotting all distributions
+
+rm(var_to_plot, dist_CIE, i)
+
+# doing it once again but for the original dataframe
+# making temporary df and dropping non numerics
+opposite_columns <- cleaned_CIE_for_modeling[, setdiff(names(cleaned_CIE_for_modeling), c("ZCTA", "contact_ID", "client_record_type", "client_record_date", "CIE_consent", "zip_code", "client_neighborhood", "client_neighborhood_dummied", "county"))]
+dist_CIE <- data.frame(opposite_columns)
+
+var_to_plot <- colnames(dist_CIE) # saving variable names
+for(i in var_to_plot){hist(dist_CIE[,i],xlab=i,main="")} # plotting all distributions
+
+rm(var_to_plot, dist_CIE, opposite_columns, i)
+par() # resetting par back to default and cleaning up
+```
+
+Wow! So We actually didn't ruin the distributions when dropping NAs row-wise with no discretion. However, with the severely low amount of remaining observations, it would be best to attempt imputation. At the worst, we can continue with the original row-wise dataframe.
+
+
+Now back to row dropping, albeit at a more conservative level
+
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# now dropping all rows containing NA for modeling (ONLY with NAs in ZCTA + region + needs)
+cleaned_CIE_for_modeling <- cleaned_CIE_for_modeling[!is.na(cleaned_CIE_for_modeling$ZCTA) & !is.na(cleaned_CIE_for_modeling$region) & !is.na(cleaned_CIE_for_modeling$housing_needs) & !is.na(cleaned_CIE_for_modeling$medical_needs) & !is.na(cleaned_CIE_for_modeling$utilities_needs) & !is.na(cleaned_CIE_for_modeling$eviction_needs), ]
+
+# then dropping all rows containing NAs in seven or more columns
+cleaned_CIE_for_modeling <- cleaned_CIE_for_modeling[rowSums(is.na(cleaned_CIE_for_modeling)) <= 6, ]
+cleaned_rows <- nrow(cleaned_CIE_for_modeling) # once again saving row count post cleaning
+
+# calculating percentage of rows removed + report
+rows_removed_percent <- ((original_rows - cleaned_rows) / original_rows) * 100
+rows_removed_report <- paste0("Original row count: ", original_rows, "\n",
+                 "Cleaned row count: ", cleaned_rows, "\n",
+                 "Rows removed: ", original_rows - cleaned_rows, "\n",
+                 "Percentage of rows removed: ", rows_removed_percent, "%")
+rm(cleaned_rows, rows_removed_percent) # removing cleaned rows var and rows_removed_percent var
+
+# Sampling and plotting missing heatmap once again
+missing_matrix_sampled <- cleaned_CIE_for_modeling %>% sample_frac(0.1) # subsetting 10% due to memory limitations of pheatmap
+# Plotting a missingness heatmap
+plot_miss <- vis_miss(missing_matrix_sampled)
+plot_miss + theme(plot.margin = margin(1, 3, 1, 1, "cm"))
+rm(missing_matrix_sampled, plot_miss)
+
+# display missing values along with observation report
+missing_proportions <- cleaned_CIE_for_modeling %>%
+  summarise_all(~ mean(is.na(.))) %>%
+  gather(key = "Variable", value = "MissingProportion")
+# Plot the missing value distributions
+ggplot(missing_proportions, aes(x = reorder(Variable, -MissingProportion), y = MissingProportion)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  xlab("Variable") +
+  ylab("Proportion of Missing Values") +
+  coord_flip()
+cat(rows_removed_report) # observation report here
+rm(rows_removed_report, missing_proportions) # removing vars + copied df
+```
+
+Okay good! So while we've lost 30% of the data and this is still a significantly large percentage, we could work with a close to 90k observation count with <~10% of NAs due to the average number of unique ZCTA observations being ~900 This means for each ZCTA, there are 100 observations. Not ideal, but far better than halving that. However there will also be an issue of temporal splitting which can further reduce observations per model, we will see how much this will punish performance then. We are still retaining the rowwise deletion dataframe as well, in order to compare results to MICE.
+
+- Now to work on MICE
+  - We will need to drop any columns that cannot be included in the imputation process, thus we will separate; contact_ID, client_record_type, client_record_date, CIE_consent, zip_code, client_neighborhood (both types), region, and county
+    -BIGG Question. Because we are conducting spatial analyses at the ZCTA-level, would it be best to continue with MICE only at ZCTA? or at Zip
+  - We also must check for multicollinearity which we will undoubtibly have..
+  - and we have to track which rows were most affected by our imputation
+  
+Prepping data for MICE
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# Date period based on Moratorium dates
+# account for county moratorium (will end up with three Moratoriums)
+# note city of san diego moratorium, but due to county-wise analysis, wasn't needed
+# city had no big impact anyway
+cleaned_CIE_for_modeling$time_period <- 0
+cleaned_CIE_for_modeling$time_period[cleaned_CIE_for_modeling$client_record_date >= as.Date("2018-01-01") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2020-02-28")] <- 1
+cleaned_CIE_for_modeling$time_period[cleaned_CIE_for_modeling$client_record_date >= as.Date("2020-02-29") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2022-03-31")] <- 2
+cleaned_CIE_for_modeling$time_period[cleaned_CIE_for_modeling$client_record_date >= as.Date("2022-04-01") & cleaned_CIE_for_modeling$client_record_date <= as.Date("2022-12-31")] <- 3 # change end of 3 to 12-31 and remove #4
+
+# doing the same for rowwise for later
+cleaned_CIE_for_modeling_rowwise$time_period <- 0
+cleaned_CIE_for_modeling_rowwise$time_period[cleaned_CIE_for_modeling_rowwise$client_record_date >= as.Date("2018-01-01") & cleaned_CIE_for_modeling_rowwise$client_record_date <= as.Date("2020-02-28")] <- 1
+cleaned_CIE_for_modeling_rowwise$time_period[cleaned_CIE_for_modeling_rowwise$client_record_date >= as.Date("2020-02-29") & cleaned_CIE_for_modeling_rowwise$client_record_date <= as.Date("2022-03-31")] <- 2
+cleaned_CIE_for_modeling_rowwise$time_period[cleaned_CIE_for_modeling_rowwise$client_record_date >= as.Date("2022-04-01") & cleaned_CIE_for_modeling_rowwise$client_record_date <= as.Date("2022-12-31")] <- 3 # change end of 3 to 12-31 and remove #4
+
+# then to track the effect of our imputation, we will create a new column
+cleaned_CIE_for_modeling$na_sum <- rowSums(is.na(cleaned_CIE_for_modeling))
+
+# splitting off columns (both imputation + rowwise)
+split_columns <- cleaned_CIE_for_modeling[, c("ZCTA", "contact_ID", "client_record_type", "client_record_date", "CIE_consent", "zip_code", "client_neighborhood", "client_neighborhood_dummied", "region", "county", "na_sum")]
+split_columns_rowwise <- cleaned_CIE_for_modeling_rowwise[, c("ZCTA", "contact_ID", "client_record_type", "client_record_date", "CIE_consent", "zip_code", "client_neighborhood", "client_neighborhood_dummied", "region", "county")]
+
+# deleting from original dataframe for now to add later if needed
+cleaned_CIE_for_modeling <- cleaned_CIE_for_modeling[, -c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)]
+cleaned_CIE_for_modeling_rowwise <- cleaned_CIE_for_modeling_rowwise[, -c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)]
+```
+  
+Collinearity using correlation matrix.
+  - note, this is typically done with datasets of a specific type. Mixtures of columns/features is not typically the easiest to visualize
+  
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# Compute correlation matrix
+cor_matrix <- rcorr(as.matrix(cleaned_CIE_for_modeling))$r
+
+# Visualize correlation matrix
+corrplot(cor_matrix, method = "circle", type = "lower", tl.cex = 0.7)
+rm(cor_matrix) # deleting correlation matrix
+
+# think about levels of cuttoff for levels of correlation
+# possibly drop gender identity
+# favor household size (accounts for grandparents vs. just children) aka captures
+# health insurance type can be dropped in favor of binary health insurance
+# pregnancy and health condition are most definitely correlated, so we are dropping pregnancy for now
+# could investigate these later using interactions or more complex models (aka NNs)
+# splitting off
+split_columns$health_insurance_type <- cleaned_CIE_for_modeling$health_insurance_type
+cleaned_CIE_for_modeling$health_insurance_type <- NULL
+
+split_columns$num_of_children <- cleaned_CIE_for_modeling$num_of_children
+cleaned_CIE_for_modeling$num_of_children <- NULL
+
+split_columns$pregnancy <- cleaned_CIE_for_modeling$pregnancy
+cleaned_CIE_for_modeling$pregnancy <- NULL
+
+split_columns$gender_identity <- cleaned_CIE_for_modeling$gender_identity
+cleaned_CIE_for_modeling$gender_identity <- NULL
+
+# Compute correlation matrix once again
+cor_matrix <- rcorr(as.matrix(cleaned_CIE_for_modeling))$r
+
+# Visualize correlation matrix
+corrplot(cor_matrix, method = "circle", type = "lower", tl.cex = 0.7)
+rm(cor_matrix) # deleting correlation matrix
+```
+
+Doing the same for rowwise
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# Compute correlation matrix
+cor_matrix <- rcorr(as.matrix(cleaned_CIE_for_modeling_rowwise))$r
+
+# Visualize correlation matrix
+corrplot(cor_matrix, method = "circle", type = "lower", tl.cex = 0.7)
+rm(cor_matrix) # deleting correlation matrix
+
+# think about levels of cuttoff for levels of correlation
+# possibly drop gender identity
+# favor household size (accounts for grandparents vs. just children) aka captures
+# health insurance type can be dropped in favor of binary health insurance
+# pregnancy and health condition are most definitely correlated, so we are dropping pregnancy for now
+# could investigate these later using interactions or more complex models (aka NNs)
+# splitting off
+split_columns_rowwise$health_insurance_type <- cleaned_CIE_for_modeling_rowwise$health_insurance_type
+cleaned_CIE_for_modeling_rowwise$health_insurance_type <- NULL
+
+split_columns_rowwise$num_of_children <- cleaned_CIE_for_modeling_rowwise$num_of_children
+cleaned_CIE_for_modeling_rowwise$num_of_children <- NULL
+
+split_columns_rowwise$pregnancy <- cleaned_CIE_for_modeling_rowwise$pregnancy
+cleaned_CIE_for_modeling_rowwise$pregnancy <- NULL
+
+split_columns_rowwise$gender_identity <- cleaned_CIE_for_modeling_rowwise$gender_identity
+cleaned_CIE_for_modeling_rowwise$gender_identity <- NULL
+
+# Compute correlation matrix once again
+cor_matrix <- rcorr(as.matrix(cleaned_CIE_for_modeling_rowwise))$r
+
+# Visualize correlation matrix
+corrplot(cor_matrix, method = "circle", type = "lower", tl.cex = 0.7)
+rm(cor_matrix) # deleting correlation matrix
+```
+
+
+-Based on the chart, we can see that there are instances of multicollinearity with geneder + gender identity, household size + household income, and 
+
+-We can potentially drop language, and region (and possibly pregnancy). We will see once conducting PCA following MICE
+  - while financial_barriers and eviction_pay_quit have shown to have a large amount of NAs, they do contribute substantially to housing needs...
+
+
+-Now conducting MICE with Date as grouping (accounting for moratorium changes)
+
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# initializing mice (do not run yet, essentially)
+init_mice <- mice::mice(cleaned_CIE_for_modeling, maxit = 0)
+
+# creating method and prediction columns
+meth <- init_mice$meth
+pred <- init_mice$pred
+
+# designating method function
+imputationFunction <- as.list(meth[meth != ""])
+meth[meth != ""] <- "bygroup"
+group <- imputationFunction
+group[] <- "time_period"
+
+# all columns other than grouping column
+pred[, "time_period"] <- 0
+
+# imputation with mice (5) * 5 iterations + capturing output to prevent crowding
+suppressWarnings(output <- capture.output({
+imp_mice <- mice(cleaned_CIE_for_modeling, meth = meth, pred = pred, m = 5,
+                  group = group, imputationFunction = imputationFunction, maxit=1)
+}))
+
+# Check convergence diagnostics
+summary(imp_mice)
+plot(imp_mice)
+
+# Assess the quality of imputations
+cleaned_CIE_imputed <- complete(imp_mice)
+rm(imp_mice) # removing imp_mice
+cleaned_rows <- nrow(cleaned_CIE_imputed) # saving row count
+
+# calculating percentage of rows removed + report
+rows_removed_percent <- ((original_rows - cleaned_rows) / original_rows) * 100
+rows_removed_report <- paste0("Original row count: ", original_rows, "\n",
+                 "Cleaned row count: ", cleaned_rows, "\n",
+                 "Rows removed: ", original_rows - cleaned_rows, "\n",
+                 "Percentage of rows removed: ", rows_removed_percent, "%")
+rm(cleaned_rows, rows_removed_percent) # removing cleaned rows var and rows_removed_percent var
+
+# Sampling and plotting missing heatmap once again
+missing_matrix_sampled <- cleaned_CIE_imputed %>% sample_frac(0.1) # subsetting 10% due to memory limitations of pheatmap
+# Plotting a missingness heatmap
+plot_miss <- vis_miss(missing_matrix_sampled)
+plot_miss + theme(plot.margin = margin(1, 3, 1, 1, "cm"))
+rm(missing_matrix_sampled, plot_miss)
+
+# display missing values along with observation report
+missing_proportions <- cleaned_CIE_imputed %>%
+  summarise_all(~ mean(is.na(.))) %>%
+  gather(key = "Variable", value = "MissingProportion")
+# Plot the missing value distributions
+ggplot(missing_proportions, aes(x = reorder(Variable, -MissingProportion), y = MissingProportion)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  xlab("Variable") +
+  ylab("Proportion of Missing Values") +
+  coord_flip()
+cat(rows_removed_report) # observation report here
+
+# prepping to repeat imputations
+non_imputed_CIE <- cleaned_CIE_for_modeling
+groupwise_imputed_CIE <- cleaned_CIE_imputed
+
+rm(rows_removed_report, missing_proportions, cleaned_CIE_imputed, original_rows, output, group, imputationFunction, init_mice, pred, meth, cleaned_CIE_for_modeling) # removing vars + copied df
+```
+
+Successfully ran! Albeit with really terrible convergence performance... (given all iterations were used)
+  -Why? Well when we refer to the data as a whole,
+    - There are a ridiculous amount of categorical options for each cat variable, thus making it very difficult for a model to properly capture the patterns for each variable. And subsequently accurately fill in the missing values
+    - Values as a whole are ridiculously varied in datatype, visualizing any issues is extremely difficult, but we could potentially try breaking the problem down
+    - Data is multicollinear. Aka there are variables that are highly correlated with each other. This is a very big issue as we will end up with unstable and unreliable coefficient estimates in our model (and/or any other issues stemming).
+    - We could utilize other methods rather than simple groupwise PMM
+
+
+Given the sheer amount of differing datatypes, it would be best for us to try chaining different equations/model forms
+  - Let's look at the full distribution of all columns remaining for modeling
+  - Determine which columns would best support the usage of pmm, rf, dt, etc.
+  - build an imputation model on MICE with specifically set models...
+  
+My attempt is below, but it is still a work in progress so it will be skipped...
+  
+```{r eval=FALSE, include=FALSE}
+# initializing mice (do not run yet, essentially)
+init_mice <- mice::mice(non_imputed_CIE, maxit = 0)
+
+# creating method and prediction columns
+meth <- init_mice$meth
+pred <- init_mice$pred
+
+# designating method function for all variables
+# you can apply an imputation method function for all variables individually
+meth[] <- "pmm" # decision tree
+
+# all columns other than grouping column
+# group <- list(year = c("year", "month"))
+# template I'm still working on
+
+# imputation with mice (1) * 1 iterations + capturing output to prevent crowding
+# we are only running a single imputation. Why? because random forests take a
+# far far more amount of time to run in comparison to predictive mean matching (the method prior)
+suppressWarnings(output <- capture.output({
+imp_mice <- mice(non_imputed_CIE, meth = meth, pred = pred, m=1, maxit=1)
+}))
+
+# Check convergence diagnostics
+summary(imp_mice)
+plot(imp_mice)
+
+# Assess the quality of imputations
+cleaned_CIE_imputed <- complete(imp_mice)
+rm(imp_mice) # removing imp_mice
+
+# saving as
+RF_imputed_CIE <- cleaned_CIE_imputed
+
+rm(rows_removed_report, missing_proportions, cleaned_CIE_imputed, original_rows, output, group, imputationFunction, init_mice, pred, meth) # removing vars + copied df
+```
+
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+par(mfrow=c(3,6), mar = c(4, 4, 2, 1)) # creating canvas size and layout
+var_to_plot <- colnames(non_imputed_CIE) # saving variable names
+for(i in var_to_plot){hist(non_imputed_CIE[,i],xlab=i,main="")} # plotting all distributions
+
+rm(var_to_plot)
+par() # resetting par back to default and cleaning up
+```
+
+Alright, so we can see several changes that need to be made
+  - poverty percentage could be logged to show a normal distribution due to positive skew
+    - however because we are rescaling when conducting PCA, this will not be necessary
+  - na_sum does not need to be logged, it's distribution origin is poisson, not normal
+  - hhsize cannot be logged, it comes from a categorical
+  - the rest of these variables all appear to be binomial in nature with the exception of language. We could retouch our variable to do so.
+    - military status and language could possibly be recoded to binary as Military-Afiliated and English/Non-English
+    - but it wouldn't be accurate to merge all differing languages and military status into a single variable considering domain knowledge
+      - there are stark contrasts between say a Veteran and Active Service Military.
+  - household size appears to have an outlier!
+  
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# removing outlier for household size
+non_imputed_CIE$hhsize[non_imputed_CIE$hhsize > 40] <- NA
+
+# why are we not applying outlier removal for the rowremoved?
+# the row containing the outlier contained an NA as well
+```
+  
+
+Generating additive variable from precarity binary measures
+  - note, while we have split columns off for out own tracking purposes, we did not remerge them as the unique ID per row allows us to merge them at a later time. Thus tracking is not needed...
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# generate additive variable
+# housing need + utility
+# 1 to 4, aka summed amount of need
+# think about grouping need
+# settled on row mean of 4 needs / 4
+cleaned_CIE_for_modeling_rowwise$housing_precarity_index <- rowMeans(cleaned_CIE_for_modeling_rowwise[c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs")])
+
+# doing the same for non_imputed
+non_imputed_CIE$housing_precarity_index <- rowMeans(non_imputed_CIE[c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs")])
+
+# and finally for the imputed version
+groupwise_imputed_CIE$housing_precarity_index <- rowMeans(groupwise_imputed_CIE[c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs")])
+
+```
+
+# Conducting PCA to determine most valuable coeficcients for modeling
+  - why not ANOVA? (outcome and especially not all variables are linear)
+  - In order, we will conduct on imputed and then rowwise (non-imputed cannot be used due to NAs)
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# subsetting for Ys (across is for later models)
+Y_across <- groupwise_imputed_CIE[, c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs")]
+HPI <- groupwise_imputed_CIE[, c("housing_precarity_index")]
+
+# splitting ZCTA out of data
+# until we can get center point coordinates of ZCTA, there is no way to ensure proper
+# capture of spatial distance. Along with the assumption that location should not influence
+# outcome. We should focus on poverty rate of the area and local population as well...
+split_columns$ZCTA <- groupwise_imputed_CIE$ZCTA
+groupwise_imputed_CIE$ZCTA <- NULL # deleting from the main dataframe
+
+# subsetting for Xs (aka covariates)
+# no need to drop contact_ID, client record type, record date, consent, region, neighborhood, zip, and county as we already did that above
+X_values <- groupwise_imputed_CIE[, !(names(groupwise_imputed_CIE) %in% c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs", "housing_precarity_index"))]
+
+# binary columns + spatial data need to be left out of scaling
+# financial_barriers, eviction_pay_quit, gender, disability_health_condition, pregnancy, health_insurance
+binary_cols <- c("financial_barriers", "eviction_pay_quit", "gender", "disability_health_condition", "health_insurance")
+
+# now we scale the non-binary values
+X_scaled <- scale(X_values[, !names(X_values) %in% binary_cols], center = TRUE, scale = TRUE)
+
+# and merge back the binary values in with the scaled values
+X_scaled <- cbind(X_scaled, X_values[, names(X_values) %in% binary_cols])
+
+# deleting unneeded objects
+rm(X_values)
+
+# conducting PCA
+pca_result <- prcomp(X_scaled)
+
+# Access variance explained
+variance_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+
+pca_result # displaying std, 20 PCs, and variance explained
+print("Variance Explained:")
+variance_explained # displaying
+```
+
+
+PCA results
+
+Note to myself:
+1. Look at STD to see how well the PC explains variance of the data
+2. Rotation Matrix per PC indicates values of correlation between vars and PC
+3. Variance Explained = calculated by dividing the square of each standard deviation by the sum of squares of all the standard deviations. Larger = more variance explained in the data for PC.
+  - given the information presented, the first principle component seems to be what best explains the variance of the data. In short it is not yet recommended to remove any of the features/coefficients based on the results unless derived from domain knowledge/reasoning.
+  - further investigation into the first PC is recommended
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# generating cumulative variance for scree plot
+cumulative_variance <- cumsum(variance_explained)
+
+# Create scree plot
+plot(1:length(variance_explained), variance_explained, type = "b", 
+     xlab = "Principal Component", ylab = "Variance Explained",
+     main = "Scree Plot")
+lines(1:length(variance_explained), cumulative_variance, type = "b", col = "red")
+legend("topright", c("Variance Explained", "Cumulative Variance"), 
+       col = c("black", "red"), lty = c(1, 1), pch = c(1, 1))
+```
+Investigating the first principle component, aka loadings
+  - higher absolute loadings (far from 0) have a stronger influence on the first principal component, while variables with lower loadings have a weaker influence
+  - in this case, there is a case where we can attempt to remove "pregnancy," "health_insurance,", "eviction_pay_quit", and "financial_barriers". All due to their weaker associations with the first component.
+  - We will create a generic OLS for HPI (Housing Precarity Index) and individual logits for each Need with two covariate changes
+    - Non compact form for all covariates -> $HPI_i \lor Need_{i} = \beta_{0} + \beta_{1} Eviction Pay/Quit + \beta_{2} Financial Barriers + \beta_{3} Pregnancy + \beta_{4} Health Ins + \\ \beta_{5} Language + \beta_{6} Employment + \beta_{7} Time Period + \beta_{8} Disability/Health + \beta_{9} Gender + \beta_{10} Military Status + \\ \beta_{11} Gender Identity + \beta_{12} Health Ins Type + \beta_{13} Age Group + \beta_{14} Household Size + \beta_{15} Num/Children + \beta_{19} ZCTA/Location/Point + \epsilon$
+    - Compact form H0 -> $HPI \lor Need_{i} = \beta_0 + \beta_1 HighVarianceExplVars + \epsilon$
+    - Compact form H1 -> $HPI \lor Need_{i} = \beta_0 + \beta_1 LowVarianceExplVars + \beta_2 HighVarianceExplVars + \epsilon$
+  "Eviction Pay/Quit", "Financial Barriers", "Pregnancy", "Health Ins", "Language", "Employment", "Time Period", "Disability/Health", "Gender", "Military Status",     "Gender Identity", "Health Ins Type", "Age Group", "Household Size", "Num/Children"
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# pulling loadings and sorting from greatest to least
+sorted_loadings <- sort(abs(pca_result$rotation[, 1]))
+
+# creating tick_names
+tick_names <- names(sorted_loadings)
+# Remove underscores from each string in the list
+tick_names <- gsub("_", "", tick_names)
+tick_names <- gsub("disabilityhealthcondition", "disb/healthcond", tick_names)
+
+# Rotate x-axis labels by 90 degrees and expand margins
+par(las = 2, mar = c(8.5, 4.5, 2.5, 1) + 0.1)
+
+# Displaying bar plot
+barplot(sorted_loadings, names.arg = tick_names, ylab = "Loadings", xlab = "", main = "Independent Variable Loadings for First Principle Component")
+
+# reversing and printing sorted_loadings
+sorted_loadings <- rev(sorted_loadings)
+cat("Sorted Loadings, further from 0 is better:\n\n")
+for (i in 1:length(sorted_loadings)) {
+  cat(names(sorted_loadings)[i], ": ", sorted_loadings[i], "\n")
+}
+
+# combining scaled and Y_mean into a single dataset
+imputed_scaled_CIE_model_ready <- cbind(X_scaled, HPI)
+
+# cleaning up
+rm(binary_cols, cumulative_variance, i, sorted_loadings, tick_names, variance_explained, pca_result, X_scaled, Y_mean)
+```
+
+
+Now doing the same for the rowwise NA removed dataset to compare
+
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# subsetting for Ys (across is for later models)
+Y_across <- cleaned_CIE_for_modeling_rowwise[, c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs")]
+HPI <- cleaned_CIE_for_modeling_rowwise[, c("housing_precarity_index")]
+
+# splitting ZCTA out of data
+# until we can get center point coordinates of ZCTA, there is no way to ensure proper
+# capture of spatial distance. Along with the assumption that location should not influence
+# outcome. We should focus on poverty rate of the area and local population as well...
+split_columns_rowwise$ZCTA <- cleaned_CIE_for_modeling_rowwise$ZCTA
+cleaned_CIE_for_modeling_rowwise$ZCTA <- NULL # deleting from the main dataframe
+
+# subsetting for Xs (aka covariates)
+# no need to drop contact_ID, client record type, record date, consent, region, neighborhood, zip, and county as we already did that above
+X_values <- cleaned_CIE_for_modeling_rowwise[, !(names(cleaned_CIE_for_modeling_rowwise) %in% c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs", "housing_precarity_index"))]
+
+# binary columns + spatial data need to be left out of scaling
+# financial_barriers, eviction_pay_quit, gender, disability_health_condition, pregnancy, health_insurance
+binary_cols <- c("financial_barriers", "eviction_pay_quit", "gender", "disability_health_condition", "health_insurance")
+
+# now we scale the non-binary values
+X_scaled <- scale(X_values[, !names(X_values) %in% binary_cols], center = TRUE, scale = TRUE)
+
+# and merge back the binary values in with the scaled values
+X_scaled <- cbind(X_scaled, X_values[, names(X_values) %in% binary_cols])
+
+# deleting unneeded objects
+rm(X_values)
+
+# conducting PCA
+pca_result <- prcomp(X_scaled)
+
+# Access variance explained
+variance_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+
+pca_result # displaying std, 20 PCs, and variance explained
+print("Variance Explained:")
+variance_explained # displaying
+```
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# generating cumulative variance for scree plot
+cumulative_variance <- cumsum(variance_explained)
+
+# Create scree plot
+plot(1:length(variance_explained), variance_explained, type = "b", 
+     xlab = "Principal Component", ylab = "Variance Explained",
+     main = "Scree Plot")
+lines(1:length(variance_explained), cumulative_variance, type = "b", col = "red")
+legend("topright", c("Variance Explained", "Cumulative Variance"), 
+       col = c("black", "red"), lty = c(1, 1), pch = c(1, 1))
+```
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# pulling loadings and sorting from greatest to least
+sorted_loadings <- sort(abs(pca_result$rotation[, 1]))
+
+# creating tick_names
+tick_names <- names(sorted_loadings)
+# Remove underscores from each string in the list
+tick_names <- gsub("_", "", tick_names)
+tick_names <- gsub("disabilityhealthcondition", "disb/healthcond", tick_names)
+
+# Rotate x-axis labels by 90 degrees and expand margins
+par(las = 2, mar = c(8.5, 4.5, 2.5, 1) + 0.1)
+
+# Displaying bar plot
+barplot(sorted_loadings, names.arg = tick_names, ylab = "Loadings", xlab = "", main = "Independent Variable Loadings for First Principle Component")
+
+# reversing and printing sorted_loadings
+sorted_loadings <- rev(sorted_loadings)
+cat("Sorted Loadings, further from 0 is better:\n\n")
+for (i in 1:length(sorted_loadings)) {
+  cat(names(sorted_loadings)[i], ": ", sorted_loadings[i], "\n")
+}
+
+# combining scaled and Y_mean into a single dataset
+rowwise_scaled_CIE_model_ready <- cbind(X_scaled, HPI)
+
+# cleaning up
+rm(binary_cols, cumulative_variance, i, sorted_loadings, tick_names, variance_explained, pca_result, X_scaled, Y_mean)
+```
+
+Based on our findings, it is best to drop NAs and continue to modeling.
+  - Imputation cannot effectively provide us with proper random NA replacement
+    - This could indicate performance issues with our modeling...
+    
+We could try with the base data and simply drop all NAs
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# quick cleaning of coded
+harsh_rowwise_cleaned <- coded_only_CIE[complete.cases(coded_only_CIE), ]
+rm(coded_only_CIE) # deleting
+
+# once again dropping columns where we found were correlated with others, aka reducing multicollinearity
+harsh_rowwise_cleaned$health_insurance_type <- NULL
+harsh_rowwise_cleaned$num_of_children <- NULL
+harsh_rowwise_cleaned$pregnancy <- NULL
+harsh_rowwise_cleaned$gender_identity <- NULL
+
+# time period variable
+harsh_rowwise_cleaned$time_period <- 0
+harsh_rowwise_cleaned$time_period[harsh_rowwise_cleaned$client_record_date >= as.Date("2018-01-01") & harsh_rowwise_cleaned$client_record_date <= as.Date("2020-02-28")] <- 1
+harsh_rowwise_cleaned$time_period[harsh_rowwise_cleaned$client_record_date >= as.Date("2020-02-29") & harsh_rowwise_cleaned$client_record_date <= as.Date("2022-03-31")] <- 2
+harsh_rowwise_cleaned$time_period[harsh_rowwise_cleaned$client_record_date >= as.Date("2022-04-01") & harsh_rowwise_cleaned$client_record_date <= as.Date("2022-12-31")] <- 3 # change end of 3 to 12-31 and remove #4
+
+# recoding/classifying categoricals
+harsh_rowwise_cleaned$language <- ifelse(harsh_rowwise_cleaned$language == 0, 1, 0) # english to 1, non-english to 0
+
+#
+
+# HPI
+harsh_rowwise_cleaned$HPI <- rowMeans(harsh_rowwise_cleaned[c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs")])
+
+# splitting columns not needed for analyses this time
+harsh_rowwise_cleaned_split <- harsh_rowwise_cleaned[, (names(harsh_rowwise_cleaned) %in% c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs", "ZCTA", "contact_ID", "client_record_type", "client_record_date", "CIE_consent", "zip_code", "client_neighborhood", "client_neighborhood_dummied", "region", "county"))]
+# retaining those that have not been split out
+harsh_rowwise_cleaned <- harsh_rowwise_cleaned[, !(names(harsh_rowwise_cleaned) %in% c("housing_needs", "utilities_needs", "medical_needs", "eviction_needs", "ZCTA", "contact_ID", "client_record_type", "client_record_date", "CIE_consent", "zip_code", "client_neighborhood", "client_neighborhood_dummied", "region", "county"))]
+
+# resetting levels/factor categories
+#levels(harsh_rowwise_cleaned$Category) <- c("Category 1", "Category 2", "Category 3")
+HPI_categorical <- ifelse(harsh_rowwise_cleaned$HPI == 0.0, "No Precarity",
+                                                ifelse(harsh_rowwise_cleaned$HPI == 0.25, "Low",
+                                                       ifelse(harsh_rowwise_cleaned$HPI == 0.5, "Low Med",
+                                                              ifelse(harsh_rowwise_cleaned$HPI == 0.75, "Med High",
+                                                                     ifelse(harsh_rowwise_cleaned$HPI == 1, "High", harsh_rowwise_cleaned$HPI)))))
+
+# gave up on recode, it seems to sometimes work and sometimes not work
+# harsh_rowwise_cleaned$HPI_categorical <- recode(harsh_rowwise_cleaned$HPI, "'0.00'=0; '0.25'=1; '0.50'=2; '0.75'=3; '1.00'=4")
+#val_lab(harsh_rowwise_cleaned$HPI_categorical) <- make_labels("0 No Precarity
+#                                       1 Low
+#                                       2 Low Med
+#                                       3 Med High
+#                                       4 High")
+```
+
+
+Reperforming PCA
+
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# subsetting for Ys (across is for later models)
+HPI <- harsh_rowwise_cleaned[, c("HPI")]
+
+# subsetting for Xs (aka covariates)
+# no need to drop contact_ID, client record type, record date, consent, region, neighborhood, zip, and county as we already did that above
+X_values <- harsh_rowwise_cleaned[, !(names(harsh_rowwise_cleaned) %in% c("HPI"))]
+
+# binary columns + spatial data need to be left out of scaling
+# financial_barriers, eviction_pay_quit, gender, disability_health_condition, pregnancy, health_insurance
+binary_cols <- c("at_risk_losing_housing", "financial_barriers", "eviction_pay_quit", "gender", "hisp_latino", "disability_health_condition", "health_insurance", "homeless")
+
+# now we scale the non-binary values
+X_scaled <- scale(X_values[, !names(X_values) %in% binary_cols], center = TRUE, scale = TRUE)
+
+# and merge back the binary values in with the scaled values
+X_scaled <- cbind(X_scaled, X_values[, names(X_values) %in% binary_cols])
+
+# deleting unneeded objects
+rm(X_values)
+
+# conducting PCA
+pca_result <- prcomp(X_scaled)
+
+# Access variance explained
+variance_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+
+pca_result # displaying std, 20 PCs, and variance explained
+print("Variance Explained:")
+variance_explained # displaying
+
+# generating cumulative variance for scree plot
+cumulative_variance <- cumsum(variance_explained)
+
+# Create scree plot
+plot(1:length(variance_explained), variance_explained, type = "b", 
+     xlab = "Principal Component", ylab = "Variance Explained",
+     main = "Scree Plot")
+lines(1:length(variance_explained), cumulative_variance, type = "b", col = "red")
+legend("topright", c("Variance Explained", "Cumulative Variance"), 
+       col = c("black", "red"), lty = c(1, 1), pch = c(1, 1))
+
+# pulling loadings and sorting from greatest to least
+sorted_loadings <- sort(abs(pca_result$rotation[, 1]))
+
+# creating tick_names
+tick_names <- names(sorted_loadings)
+# Remove underscores from each string in the list
+tick_names <- gsub("_", "", tick_names)
+tick_names <- gsub("disabilityhealthcondition", "disb/healthcond", tick_names)
+
+# Rotate x-axis labels by 90 degrees and expand margins
+par(las = 2, mar = c(8.5, 4.5, 2.5, 1) + 0.1)
+
+# Displaying bar plot
+barplot(sorted_loadings, names.arg = tick_names, ylab = "Loadings", xlab = "", main = "Independent Variable Loadings for First Principle Component")
+
+# reversing and printing sorted_loadings
+sorted_loadings <- rev(sorted_loadings)
+cat("Sorted Loadings, further from 0 is better:\n\n")
+for (i in 1:length(sorted_loadings)) {
+  cat(names(sorted_loadings)[i], ": ", sorted_loadings[i], "\n")
+}
+
+# combining scaled and Y_mean into a single dataset
+harsh_model_ready <- cbind(X_scaled, HPI)
+
+# cleaning up
+rm(binary_cols, cumulative_variance, i, sorted_loadings, tick_names, variance_explained, pca_result, X_scaled, Y_mean)
+```
+
+So we ultimately have the same problem regardless of how many features we drop nor how many observations we have. Furthermore, it seems we could pull features from disabled/health condition up to household size.
+  - Household size and education appear to be the most descriptive features of our dataset.
+
+
+## Creation of Simple Models
+- fitting OLS and logit
+  - per Need_i and HPI
+  - per high variance explained vs. lower variance explained variables as found from PCA
+  - moratorium periods will require data to be split to account for COVID-19 changes
+  - then comparing BIC for each model at the in-sample level
+- best performing model format will then iterated upon in complexity in next section
+
+```{r mylatextable, results = "asis"}
+# omitting other needs categories for now to deal with simple modeling first
+# weighted linear model utilizing index as outcome (weighted at 4)
+# placed in order of feature variance explained
+
+#("0 Alaska Native/ Native Indian
+#                                       1 Asian/ Pacific Islander/ Hawaiian
+#                                       2 Bi-Racial/ Multi-Racial
+#                                       3 African American/ Black
+#                                       4 Other
+#                                       5 Hispanic / Latino
+#                                       6 White/ Caucasian")
+
+#("0 U.S Citizen/Naturalized Citizen
+#                                       1 Lawful Permanent Resident (LPR)
+#                                       2 Non-Citizen or Unauthorized/Undocumented Immigrant
+#                                       3 Conditional Permanent Resident
+#                                       4 Refugee
+#                                       5 Special Immigrant Juvenile (SIJ) Status
+#                                       6 Asylum Seeker
+#                                       7 Non-Immigrant Temporary Visas
+#                                       8 Family-Sponsored Visas
+#                                       9 VAWA Self-Petitioner
+#                                       10 Victim of Trafficking in persons")
+
+
+weights_recorded <- rep(4, nrow(harsh_rowwise_cleaned))
+lm1 <- lm(HPI ~ hhsize + factor(residency) + education + age_group + factor(employment) + language + military_status + factor(race_multi_ethnic) + hisp_latino + time_period + hhincome + disability_health_condition + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+lm2 <- lm(HPI ~ hhsize + factor(residency) + education + age_group + factor(employment) + language + factor(race_multi_ethnic) + hisp_latino + time_period + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+lm3 <- lm(HPI ~ hhsize + education + age_group + factor(employment) + language + factor(race_multi_ethnic) + hisp_latino + time_period + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+lm4 <- lm(HPI ~ hhsize + education + age_group + language + factor(race_multi_ethnic) + hisp_latino + time_period + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+lm5 <- lm(HPI ~ hhsize + residency + age_group + language + factor(race_multi_ethnic) + hisp_latino + time_period + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+lm6 <- lm(HPI ~ hhsize + age_group + language + factor(race_multi_ethnic) + hisp_latino + time_period + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+lm7 <- lm(HPI ~ hhsize + age_group + language + factor(race_multi_ethnic) + time_period + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+lm8 <- lm(HPI ~ hhsize + language + factor(race_multi_ethnic) + time_period + poverty_percentage, data = harsh_rowwise_cleaned, weights = weights_recorded)
+
+
+#c_labels <- c("Female", "Age", "Number of Children", "Has Disability/Health Condition", "Has Health Insurance", "Less than high school", "High School Degree", "GED or alt", "Some College", "Associates", "Bachelors", "Masters", "Professional", "Doctoral", "Is Pregnant?", "Household Monthly Income", "Household Size", "Unable to work", "Full-Time ", "Self-employed", "Part-Time", "Unemployed", "Seasonal / Sporadic", "Other", "Retired", "Underemployed", "Not in the Labor Force", "In School", "Temporary", "Financial Barriers Assessment?")
+# covariate.labels = c_labels
+mod_stargazer(lm1, type='latex')
+
+# explaining everything on the table
+# include an equation
+```
+- Changes made; it is now possible to split data directly off of the moratorium period (as it is now accounted for)
+  - added in poverty and population per ZCTA, poverty rate can be gained by combining both (poverty/pop)
+  - tracking imputation effects utilizing NA feature
+  - Scrapped additional models for now to save time on handling imputation issues
+  
+## Creation of Additional Models
+
+```{r eval=FALSE, include=FALSE}
+# moving HPI to separate var for now
+HPI_harsh <- harsh_rowwise_cleaned$HPI
+harsh_rowwise_cleaned$HPI <- NULL
+harsh_rowwise_cleaned$HPI_categorical <- HPI_categorical
+
+set.seed(1)  # For reproducibility
+k = 1 # number of folds
+
+# splitting into train/test
+train_indices <- createDataPartition(harsh_rowwise_cleaned$HPI_categorical, p = 0.8, list = FioALSE)
+train_data <- harsh_rowwise_cleaned[train_indices, ]
+test_data <- harsh_rowwise_cleaned[-train_indices, ]
+
+
+ctrl <- trainControl(method = "repeatedcv", number = k, repeats=1)
+
+metric <- "Accuracy"
+
+# random forest
+mtry <- sqrt(ncol(train_data))
+tunegrid <- expand.grid(.mtry=mtry)
+rf1 <- train(HPI_categorical ~ ., data = harsh_rowwise_cleaned, method = "rf", metric='Accuracy', tuneGrid=tunegrid, trControl = ctrl) 
+# this time we are assuming we have a multi class problem considering the low amount of varied data in HPI
+print(rf1)
+```
+
+```{r eval=FALSE, include=FALSE}
+# factoring HPI
+harsh_rowwise_cleaned$HPI_categorical <- factor(harsh_rowwise_cleaned$HPI_categorical, levels = c("No Precarity", "Low", "Low Med", "Med High", "High"))
+
+
+# attempting categorical regression with clm
+clm1 <- clm(HPI_categorical ~ hhsize + factor(residency) + education + age_group + factor(employment) + language + military_status + factor(race_multi_ethnic) + hisp_latino + time_period + hhincome + disability_health_condition, data = harsh_rowwise_cleaned)
+
+mod_stargazer(clm1, type='latex')
+```
+
+
+Lasso regression
+
+```{r}
+library(glmnetUtils)
+predictor_cols <- setdiff(colnames(cleaned_CIE), "housing_needs")
+
+# Identify the categorical variables
+categorical_cols <- c("race_multi_ethnic", "employment", "language", "housing_type")
+
+# Convert categorical variables to dummy variables
+dummy_vars <- model.matrix(~.-1, data = cleaned_CIE[, c(predictor_cols, categorical_cols)])
+dummy_vars <- as.data.frame(dummy_vars)
+
+# Fit the lasso regression model
+model <- glmnet(x = as.matrix(dummy_vars), y = cleaned_CIE$housing_needs, family = "binomial")
+
+# Perform cross-validation to select the lambda value
+cv <- cv.glmnet(x = as.matrix(dummy_vars), y = cleaned_CIE$housing_needs, family = "binomial")
+
+# Select the best lambda value
+best_lambda <- cv$lambda.min
+
+# Obtain the coefficient estimates
+coef_estimates <- coef(model, s = best_lambda)
+
+
+plot(coef_estimates, xlab = "Variables", ylab = "Coefficient Magnitude", main = "Lasso Coefficient Plot")
+
+predicted <- predict(model, newx = as.matrix(dummy_vars), s = best_lambda)
+plot(predicted, cleaned_CIE$housing_needs, xlab = "Predicted Values", ylab = "Actual Values", main = "Predicted vs. Actual Plot")
+
+
+coef_df <- as.data.frame(coef_estimates)
+coef_df <- tidyr::gather(coef_df, key = "Variable", value = "Coefficient", -1)
+ggplot(coef_df, aes(x = log(lambda), y = Coefficient, color = Variable)) +
+  geom_line() +
+  xlab("Log(lambda)") +
+  ylab("Coefficient") +
+  labs(color = "Variable") +
+  ggtitle("Coefficient Path Plot")
+
+```
+
+## Conducting Forest Plot for Model Selection
+
+```{r, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+
+summary(lm4)
+```
+
+
+## Showcasing In-Sample Performance
+
+```{r, results = "asis"}
+# Calculate AIC, BIC, and log-likelihood for each model (Credit Given to Holly Jansen for this quick template to store AIC/BIC/LogLik)
+a1 <- cbind(AIC(lm1), BIC(lm1), logLik(lm1))
+a2 <- cbind(AIC(lm2), BIC(lm2), logLik(lm2))
+a3 <- cbind(AIC(lm3), BIC(lm3), logLik(lm3))
+a4 <- cbind(AIC(lm4), BIC(lm4), logLik(lm4))
+a5 <- cbind(AIC(lm5), BIC(lm5), logLik(lm5))
+a6 <- cbind(AIC(lm6), BIC(lm6), logLik(lm6))
+a7 <- cbind(AIC(lm7), BIC(lm7), logLik(lm7))
+a8 <- cbind(AIC(lm8), BIC(lm8), logLik(lm8))
+
+#b1 <- cbind(AIC(clm1), BIC(clm1), logLik(clm1))
+
+# Combine statistics for each model
+all_stats <- rbind(a1, a2, a3, a4, a5, a6, a7, a8)
+
+# Print as a table
+colnames(all_stats) <- c("AIC", "BIC", "LogLik")
+rownames(all_stats) <- c("Weighted OLS", "W_OLS Simplified", "W_OLS Simplified 2", "W_OLS Simplified 3", "W_OLS Simplified 4", "W_OLS Simplified 5", "W_OLS Simplified 6","W_OLS Simplified 7")
+mod_stargazer(all_stats, summary=F, title="In-Sample Model Performance Scores", digits=4, no.space=T, flip=F, type='latex')
+
+```
+
+
+## Out of sample performance comparisons for best performing model
+  
+  
+```{r eval=FALSE, include=FALSE}
+suppressWarnings({
+set.seed(1)
+  
+# First doing so for 2019
+train_X  <- subset(cleaned_spanish_political_attitudes_2019)
+test_y   <- subset(cleaned_spanish_political_attitudes_2020)
+
+# train model on training data
+glm_19_to_20 <- glm(vim_vox ~ female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = train_X, family = binomial(link="logit"))
+
+# combine predictor and known truth for training and test datasets into one data frame
+df_19_to_20 <- rbind(data.frame(predictor = predict(glm_19_to_20, train_X),
+                       known.truth = train_X$vim_vox,
+                       model = "train (2019)"),
+            data.frame(predictor = predict(glm_19_to_20, test_y),
+                       known.truth = test_y$vim_vox,
+                       model = "test (2020)"))
+
+df_19_to_20$known.truth <- factor(df_19_to_20$known.truth)
+df_19_to_20$predictor <- -(df_19_to_20$predictor) # careless mistakes led to this
+#________________________
+# now doing 2020
+train_X  <- subset(cleaned_spanish_political_attitudes_2020)
+test_y   <- subset(cleaned_spanish_political_attitudes_2019)
+
+# train model on training data
+glm_20_to_19 <- glm(vim_vox ~ female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = train_X, family = binomial(link="logit"))
+
+# combine predictor and known truth for training and test datasets into one data frame
+df_20_to_19 <- rbind(data.frame(predictor = predict(glm_20_to_19, train_X),
+                       known.truth = train_X$vim_vox,
+                       model = "train (2020)"),
+            data.frame(predictor = predict(glm_20_to_19, test_y),
+                       known.truth = test_y$vim_vox,
+                       model = "test (2019)"))
+
+df_20_to_19$known.truth <- factor(df_20_to_19$known.truth)
+df_20_to_19$predictor <- -(df_20_to_19$predictor) # careless mistakes led to this
+
+#________________________
+# Plotting
+# d = the known truth
+# m = the predictor values 
+
+plot_19_to_20 <- ggplot(df_19_to_20, aes(d = known.truth, m = predictor, color = model)) + 
+  geom_roc(n.cuts = 0)
+
+# Extracts AUC Scores
+auc_values_19_20 <- calc_auc(plot_19_to_20)[4]
+
+plot_19_to_20 <- plot_19_to_20 + annotate("text", x=0.70, y=0.05, 
+           label=paste("Test (2020) AUC =", round(auc_values_19_20$AUC[1], 2))) +
+    annotate("text", x=0.70, y=0.13, 
+           label=paste("Train (2019) AUC =", round(auc_values_19_20$AUC[2], 2))) + 
+  xlab("False Positive Rate") + 
+  ylab("True Positive Rate") +
+  ggtitle("Training (2019) and Testing (2020)")
+
+plot_20_to_19 <- ggplot(df_20_to_19, aes(d = known.truth, m = predictor, color = model)) + 
+  geom_roc(n.cuts = 0)
+
+# Extracts AUC Scores
+auc_values_20_19 <- calc_auc(plot_20_to_19)[4]
+
+plot_20_to_19 <- plot_20_to_19 + annotate("text", x=0.70, y=0.05, 
+           label=paste("Test (2019) AUC =", round(auc_values_20_19$AUC[1], 2))) +
+    annotate("text", x=0.70, y=0.13, 
+           label=paste("Train (2020) AUC =", round(auc_values_20_19$AUC[2], 2))) + 
+  xlab("False Positive Rate") + 
+  ylab("True Positive Rate") +
+  ggtitle("Training (2020) and Testing (2019)")
+
+plot_total <- grid.arrange(arrangeGrob(plot_19_to_20 + theme(legend.position="bottom"),
+                         plot_20_to_19 + theme(legend.position="bottom"),
+                         nrow=1), nrow=2,heights=c(10, 1), top=("ROC/AUC for Modern Sexism Predicting Vox Support: Year Predicting Next"))
+})
+```
+
+
+## Out of sample performance comparisons using Repeated K-folds across 2019 and 2020 models (original + variations)
+
+
+```{r eval=FALSE, include=FALSE}
+train.control <- trainControl(method = "repeatedcv", number = 50, repeats = 5, summaryFunction = twoClassSummary, classProbs = TRUE, savePredictions = "all")
+# train the model
+set.seed(1)
+
+t1m_original <- caret::train(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = cleaned_spanish_political_attitudes_2019, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# removing income control due to the odd imputation used, curious to see if there will be any changes
+t1m_var1 <- caret::train(vim_vox~female + age + factor(edu3) + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = cleaned_spanish_political_attitudes_2019, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# utilizing swim_msex instead of msexism
+t1m_var2 <- caret::train(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + swim_msex, data = cleaned_spanish_political_attitudes_2019, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# removing sexism altogether
+t1m_var3 <- caret::train(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz, data = cleaned_spanish_political_attitudes_2019, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# calculating ROC
+suppressMessages(d.roc_t1_original <- roc(response = t1m_original$pred$obs, predictor = t1m_original$pred$Vox, auc=TRUE))
+suppressMessages(d.roc_t1_var1 <- roc(response = t1m_var1$pred$obs, predictor = t1m_var1$pred$Vox, auc=TRUE))
+suppressMessages(d.roc_t1_var2 <- roc(response = t1m_var2$pred$obs, predictor = t1m_var2$pred$Vox, auc=TRUE))
+suppressMessages(d.roc_t1_var3 <- roc(response = t1m_var3$pred$obs, predictor = t1m_var3$pred$Vox, auc=TRUE))
+
+# saving AUC scores
+auc_labels_t1 <- c("Original", "Income Removed", "Swim Msexism", "No Sexism")
+auc_scores_t1 <- c(auc(d.roc_t1_original), auc(d.roc_t1_var1), auc(d.roc_t1_var2), auc(d.roc_t1_var3))
+
+#> Setting levels: control = Else, case = Vox
+#> Setting direction: controls < cases
+
+d.roc_t1_original <- data.frame(sensitivities = d.roc_t1_original$sensitivities,
+                    specificities = d.roc_t1_original$specificities)
+d.roc_t1_var1 <- data.frame(sensitivities = d.roc_t1_var1$sensitivities,
+                    specificities = d.roc_t1_var1$specificities)
+d.roc_t1_var2 <- data.frame(sensitivities = d.roc_t1_var2$sensitivities,
+                    specificities = d.roc_t1_var2$specificities)
+d.roc_t1_var3 <- data.frame(sensitivities = d.roc_t1_var3$sensitivities,
+                    specificities = d.roc_t1_var3$specificities)
+
+
+roc_2019_plot <- ggplot() + geom_line(data = d.roc_t1_original, aes(x=specificities,y=sensitivities, colour = "Original"), linewidth = 0.8) +
+  geom_line(data = d.roc_t1_var1, aes(x=specificities,y=sensitivities, colour = "income removed"), linewidth = 1, alpha = 0.75) +
+  geom_line(data = d.roc_t1_var2, aes(x=specificities,y=sensitivities, colour = "swim_msex"), linewidth = 1, alpha = 0.75) +
+  geom_line(data = d.roc_t1_var3, aes(x=specificities,y=sensitivities, colour = "no sexism"), linewidth = 1, alpha = 0.75) +
+  ylim(0,1) +
+  geom_abline(aes(slope = 1, intercept = 1)) +
+  scale_x_reverse(limit = c(1,0)) +
+  scale_colour_manual(values = c("Black", "Red", "Blue", "DarkGreen"), name = "") +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  ggtitle("2019 models") + 
+  xlab("False Positive Rate") + 
+  ylab("True Positive Rate")
+
+#___________________________________
+# using same train control but resetting seed
+set.seed(1)
+
+t2m_original <- caret::train(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = cleaned_spanish_political_attitudes_2020, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# removing income control due to the odd imputation used, curious to see if there will be any changes
+t2m_var1 <- caret::train(vim_vox~female + age + factor(edu3) + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = cleaned_spanish_political_attitudes_2020, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# utilizing swim_msex instead of msexism
+t2m_var2 <- caret::train(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + swim_msex, data = cleaned_spanish_political_attitudes_2020, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# removing sexism altogether
+t2m_var3 <- caret::train(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz, data = cleaned_spanish_political_attitudes_2020, method = "glm", family = "binomial"(link='logit'), trControl = train.control, metric="ROC")
+
+# calculating ROC
+suppressMessages(d.roc_t2_original <- roc(response = t2m_original$pred$obs, predictor = t2m_original$pred$Vox, auc=TRUE))
+suppressMessages(d.roc_t2_var1 <- roc(response = t2m_var1$pred$obs, predictor = t2m_var1$pred$Vox, auc=TRUE))
+suppressMessages(d.roc_t2_var2 <- roc(response = t2m_var2$pred$obs, predictor = t2m_var2$pred$Vox, auc=TRUE))
+suppressMessages(d.roc_t2_var3 <- roc(response = t2m_var3$pred$obs, predictor = t2m_var3$pred$Vox, auc=TRUE))
+
+# saving AUC scores
+auc_scores_t2 <- c(auc(d.roc_t2_original), auc(d.roc_t2_var1), auc(d.roc_t2_var2), auc(d.roc_t2_var3))
+
+#> Setting levels: control = Else, case = Vox
+#> Setting direction: controls < cases
+
+d.roc_t2_original <- data.frame(sensitivities = d.roc_t2_original$sensitivities,
+                    specificities = d.roc_t2_original$specificities)
+d.roc_t2_var1 <- data.frame(sensitivities = d.roc_t2_var1$sensitivities,
+                    specificities = d.roc_t2_var1$specificities)
+d.roc_t2_var2 <- data.frame(sensitivities = d.roc_t2_var2$sensitivities,
+                    specificities = d.roc_t2_var2$specificities)
+d.roc_t2_var3 <- data.frame(sensitivities = d.roc_t2_var3$sensitivities,
+                    specificities = d.roc_t2_var3$specificities)
+
+
+roc_2020_plot <- ggplot() + geom_line(data = d.roc_t2_original, aes(x=specificities,y=sensitivities, colour = "Original"), linewidth = 0.8) +
+  geom_line(data = d.roc_t2_var1, aes(x=specificities,y=sensitivities, colour = "income removed"), linewidth = 1, alpha = 0.75) +
+  geom_line(data = d.roc_t2_var2, aes(x=specificities,y=sensitivities, colour = "swim_msex"), linewidth = 1, alpha = 0.75) +
+  geom_line(data = d.roc_t2_var3, aes(x=specificities,y=sensitivities, colour = "no sexism"), linewidth = 1, alpha = 0.75) +
+  ylim(0,1) +
+  geom_abline(aes(slope = 1, intercept = 1)) +
+  scale_x_reverse(limit = c(1,0)) +
+  scale_colour_manual(values = c("Black", "Red", "Blue", "DarkGreen"), name = "") +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  ggtitle("2020 models") + 
+  xlab("False Positive Rate") + 
+  ylab("True Positive Rate")
+#> `geom_smooth()` using method = 'gam' and formula 'y ~ s(x, bs = "cs")'
+#________________________________
+legend_pull <- get_legend(roc_2020_plot)
+plot_all <- grid.arrange(arrangeGrob(roc_2019_plot + theme(legend.position="none"),
+                         roc_2020_plot + theme(legend.position="none"),
+                         nrow=1),legend_pull, nrow=2,heights=c(10, 1), top=("ROC of Avg Repeated (K=50/R=5) CV"))
+```
+
+
+- Showing AUC Scores
+
+
+```{r eval=FALSE, include=FALSE}
+
+auc_table_model_comparisons <- data.frame("Original" = numeric(),
+                        "Income Removed" = numeric(),
+                        "Swim MSexism" = numeric(),
+                        "No Sexism" = numeric(),
+                        stringsAsFactors = FALSE)
+
+auc_table_model_comparisons[1,] <- auc_scores_t1
+auc_table_model_comparisons[2,] <- auc_scores_t2
+rownames(auc_table_model_comparisons) <- c("2019", "2020")
+colnames(auc_table_model_comparisons) <- auc_labels_t1
+mod_stargazer(auc_table_model_comparisons, summary=F, title="AUC Scores for All Models, K = 50, R = 5", digits=4, no.space=T, flip=F)
+
+```
+
+
+## In-Sample Model Performance (AUC/BIC/LogLik)
+
+
+```{r eval=FALSE, include=FALSE}
+#t1m1
+
+# removing income control due to the odd imputation used, curious to see if there will be any changes
+t1m_var1 <- glm(vim_vox~female + age + factor(edu3) + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = cleaned_spanish_political_attitudes_2019, family = "binomial"(link='logit'))
+
+# utilizing swim_msex instead of msexism
+t1m_var2 <- glm(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + swim_msex, data = cleaned_spanish_political_attitudes_2019, family = "binomial"(link='logit'))
+
+# removing sexism altogether
+t1m_var3 <- glm(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz, data = cleaned_spanish_political_attitudes_2019, family = "binomial"(link='logit'))
+
+# Now for 2020
+#t2m2
+
+# removing income control due to the odd imputation used, curious to see if there will be any changes
+t2m_var1 <- glm(vim_vox~female + age + factor(edu3) + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + msexism, data = cleaned_spanish_political_attitudes_2020, family = "binomial"(link='logit'))
+
+# utilizing swim_msex instead of msexism
+t2m_var2 <- glm(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz + swim_msex, data = cleaned_spanish_political_attitudes_2020, family = "binomial"(link='logit'))
+
+# removing sexism altogether
+t2m_var3 <- glm(vim_vox~female + age + factor(edu3) + dhincome_all + livingpartner + intpol + authoritarian + ideol + nativism + orgterr + pop6amz, data = cleaned_spanish_political_attitudes_2020, family = "binomial"(link='logit'))
+
+# Calculate AIC, BIC, and log-likelihood for each model (Credit Given to Holly Jansen for this quick template to store AIC/BIC/LogLik)
+t1_orig_stats <- cbind(AIC(t1m1), BIC(t1m1), logLik(t1m1))
+t1_var1_stats <- cbind(AIC(t1m_var1), BIC(t1m_var1), logLik(t1m_var1))
+t1_var2_stats <- cbind(AIC(t1m_var2), BIC(t1m_var2), logLik(t1m_var2))
+t1_var3_stats <- cbind(AIC(t1m_var3), BIC(t1m_var3), logLik(t1m_var3))
+t2_orig_stats <- cbind(AIC(t2m2), BIC(t2m2), logLik(t2m2))
+t2_var1_stats <- cbind(AIC(t2m_var1), BIC(t2m_var1), logLik(t2m_var1))
+t2_var2_stats <- cbind(AIC(t2m_var2), BIC(t2m_var2), logLik(t2m_var2))
+t2_var3_stats <- cbind(AIC(t2m_var3), BIC(t2m_var3), logLik(t2m_var3))
+
+# Combine statistics for each model
+all_stats <- rbind(t1_orig_stats, t1_var1_stats, t1_var2_stats, t1_var3_stats, t2_orig_stats, t2_var1_stats, t2_var2_stats, t2_var3_stats)
+
+# Print as a table
+colnames(all_stats) <- c("AIC", "BIC", "LogLik")
+rownames(all_stats) <- c("Original Model (2019)", "Income Removed (2020)", "Swim MSexism (2019)", "No Sexism (2019)", "Original Model (2020)", "Income Removed (2020)", "Swim MSexism (2020)", "No Sexism (2020)")
+mod_stargazer(all_stats, summary=F, title="In-Sample Model Performance Scores", digits=4, no.space=T, flip=F)
+```
+
+
+Seems the original model can't be beat, but it is interesting to see how Swim's Msexism performs only marginally worse than with Modern Sexism, and seeing the models without any pet variable (no Sexism) shows that while Sexism does hold true with the author's claim that it is a better indicator of Vox/far-right political party support, it isn't really as strong as they claim. The issue is there are far more factors contributing to a person's support for alt-right parties than just sexism, it could be their support for populism or their ideological identification. But with the small amount of change sexism brings to model performance, it seems that even if someone was supportive of Vox, it could also be that they are hard alt-right in the first place, or simply a combination of having low education, greater interest in politics, low income, and favors nativism, rather than being sexist. So sexism can be a contributing factor to predicting alt-right party support, but it may not be the strong contributor the author's claim.
+
+---
